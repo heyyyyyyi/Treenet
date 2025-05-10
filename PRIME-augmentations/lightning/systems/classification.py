@@ -104,9 +104,29 @@ class Classifier(pl.LightningModule):
                 self.log(f"test.{key}", self.test_acc[key], on_step=False, on_epoch=True)
                 avg_acc.append(cur_acc)
 
+                # 计算每个任务的每个类别的准确率
+                unique_labels = torch.unique(targets)
+                for label in unique_labels:
+                    label_mask = targets == label
+                    label_preds = preds[label_mask]
+                    label_targets = targets[label_mask]
+                    if label_targets.numel() > 0:  # 避免除零错误
+                        label_acc = (label_preds == label_targets).float().mean()
+                        self.log(f"test.{key}.label_{label}.acc", label_acc, on_step=False, on_epoch=True)
+
             self.log("test_avg.acc", torch.tensor(avg_acc).mean(), on_step=False, on_epoch=True)
         else:
             preds = batch_parts["preds"]
             targets = batch_parts["targets"]
             self.test_acc(preds, targets)
             self.log("test.acc", self.test_acc, on_step=False, on_epoch=True)
+
+            # 计算单任务的每个类别的准确率
+            unique_labels = torch.unique(targets)
+            for label in unique_labels:
+                label_mask = targets == label
+                label_preds = preds[label_mask]
+                label_targets = targets[label_mask]
+                if label_targets.numel() > 0:  # 避免除零错误
+                    label_acc = (label_preds == label_targets).float().mean()
+                    self.log(f"test.label_{label}.acc", label_acc, on_step=False, on_epoch=True)

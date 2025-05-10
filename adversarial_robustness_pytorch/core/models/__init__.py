@@ -41,9 +41,9 @@ def create_model(name, normalize, info, device):
     elif info['data'] in DATASETS and info['data'] not in ['tiny-imagenet']:
         # add treeresnet and light resnet
         if 'treeresnet' in name:
-            backbone = treeresnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
+            backbone = lighttreeresnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
         elif 'light' in name:
-            backbone = light_resnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
+            backbone = lightresnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
         elif 'preact-resnet' in name and 'swish' not in name:
             backbone = preact_resnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
         elif 'preact-resnet' in name and 'swish' in name:

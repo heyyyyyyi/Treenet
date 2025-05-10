@@ -178,17 +178,11 @@ class LightResnet(nn.Module):
         self.fc = nn.Linear(64, num_classes)
 
     def _make_layer(self, block, planes, num_blocks, stride):
-        downsample = None
-        if (stride != 1) or (self.in_planes != planes):
-            downsample = nn.Sequential(
-                nn.Conv2d(self.in_planes, planes, kernel_size=1, stride=stride, bias=False),  # 修复 kernel_size=1
-                nn.BatchNorm2d(planes)
-            )
+        strides = [stride] + [1] * (num_blocks - 1)
         layers = []
-        layers.append(block(self.in_planes, planes, stride, downsample))
-        self.in_planes = planes
-        for _ in range(1, num_blocks):
-            layers.append(block(planes, planes))
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
     def forward(self, x):
@@ -212,8 +206,8 @@ def lightresnet(name, num_classes=10, pretrained=False, device='cpu'):
     Returns:
         torch.nn.Module.
     """
-    if name == 'light_resnet20':
+    if name == 'lightresnet20':
         return LightResnet(BasicBlock, [2, 2, 2], num_classes=num_classes, device=device)
      
-    raise ValueError('Only light_resnet20 are supported!')
+    raise ValueError('Only lightresnet20 are supported!')
     return
