@@ -9,10 +9,10 @@ import torch
 
 from .. import utils
 
-from lightning import animal_classes, vehicle_classes
+from core import animal_classes, vehicle_classes
 
 class RootResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True):
+    def __init__(self, block, num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, device='cpu'):
         super(RootResNet, self).__init__()
         self.in_planes = 64
 
@@ -51,7 +51,7 @@ class RootResNet(nn.Module):
         return logits, feature_map
 
 class SubRootResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes, linear_bias=True, bn_affine=True):
+    def __init__(self, block, num_blocks, num_classes, linear_bias=True, bn_affine=True, device='cpu'):
         super(SubRootResNet, self).__init__()
         self.in_planes = 256
 
@@ -79,11 +79,11 @@ class SubRootResNet(nn.Module):
         return logits
 
 class TreeResNet(nn.Module):
-    def __init__(self, block, root_num_blocks, subroot_num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True):
+    def __init__(self, block, root_num_blocks, subroot_num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, device='cpu'):
         super(TreeResNet, self).__init__()
-        self.root_model = RootResNet(block, root_num_blocks, num_channels=num_channels, num_classes=num_classes,linear_bias=linear_bias,bn_affine=bn_affine)  # 10分类 
-        self.subroot_animal = SubRootResNet(block, subroot_num_blocks, num_classes=7,linear_bias=linear_bias,bn_affine=bn_affine)  # 6种动物 + 1 none of them
-        self.subroot_vehicle = SubRootResNet(block, subroot_num_blocks, num_classes=5,linear_bias=linear_bias,bn_affine=bn_affine)  # 4种交通工具 + 1 none of them 
+        self.root_model = RootResNet(block, root_num_blocks, num_channels=num_channels, num_classes=num_classes,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 10分类 
+        self.subroot_animal = SubRootResNet(block, subroot_num_blocks, num_classes=7,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 6种动物 + 1 none of them
+        self.subroot_vehicle = SubRootResNet(block, subroot_num_blocks, num_classes=5,linear_bias=linear_bias,bn_affine=bn_affine, device = device)  # 4种交通工具 + 1 none of them 
 
     def forward(self, x):
         root_logits, root_features = self.root_model(x)
@@ -118,30 +118,12 @@ class TreeResNet(nn.Module):
             return root_logits, subroot_logits
 
     
-@utils.register_model(dataset='cifar10', name='treeresnet34')
-@utils.register_model(dataset='cifar100', name='treeresnet34')
-class TreeResNet34(TreeResNet): # 【3，4，6，3】 resnet34， 【3，4，3】 treeresnet34 +【3】；
-    def __init__(self, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
-        super(TreeResNet34, self).__init__( 
-            BasicBlock, [3, 4, 3],[3,3], 
-            num_channels=num_channels, num_classes=num_classes,
-            linear_bias=linear_bias, bn_affine=bn_affine
-        )
-
-@utils.register_model(dataset='cifar10', name='treeresnet18')
-@utils.register_model(dataset='cifar100', name='treeresnet18')
-class TreeResNet18(TreeResNet): # 【2, 2, 2, 2】 resnet18, 【2, 2, 1】 treeresnet18 +【1】；
-    def __init__(self, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
-        super(TreeResNet18, self).__init__( 
-            BasicBlock, [2,2,1], [1,1],
-            num_channels=num_channels, num_classes=num_classes,
-            linear_bias=linear_bias, bn_affine=bn_affine
-        )
+#def resnet34(num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
 
 # ---------------------------light resnet--------------------------------
 
 class LightRootResnet(nn.Module):
-    def __init__(self, block, num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True):
+    def __init__(self, block, num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, device='cpu'):
         super(LightRootResnet, self).__init__()
         self.in_planes = 16
 
@@ -185,7 +167,7 @@ class LightRootResnet(nn.Module):
         return logits ,feature_map
 
 class LightSubRootResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes, linear_bias=True, bn_affine=True):
+    def __init__(self, block, num_blocks, num_classes, linear_bias=True, bn_affine=True, device='cpu'):
         super(LightSubRootResNet, self).__init__()
         self.in_planes = 32
 
@@ -211,11 +193,11 @@ class LightSubRootResNet(nn.Module):
 
 # samilar to TreeResNet, change the root model to LightRootResnet, and subroot model to LightSubRootResNet
 class LightTreeResNet(nn.Module):
-    def __init__(self, block, root_num_blocks, subroot_num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True):
+    def __init__(self, block, root_num_blocks, subroot_num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, device='cpu'):
         super(LightTreeResNet, self).__init__()
-        self.root_model = LightRootResnet(block, root_num_blocks, num_channels=num_channels, num_classes=num_classes,linear_bias=linear_bias,bn_affine=bn_affine)  # 10分类 
-        self.subroot_animal = LightSubRootResNet(block, subroot_num_blocks, num_classes=7,linear_bias=linear_bias,bn_affine=bn_affine)  # 6种动物 + 1 none of them
-        self.subroot_vehicle = LightSubRootResNet(block, subroot_num_blocks, num_classes=5,linear_bias=linear_bias,bn_affine=bn_affine)  # 4种交通工具 + 1 none of them 
+        self.root_model = LightRootResnet(block, root_num_blocks, num_channels=num_channels, num_classes=num_classes,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 10分类 
+        self.subroot_animal = LightSubRootResNet(block, subroot_num_blocks, num_classes=7,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 6种动物 + 1 none of them
+        self.subroot_vehicle = LightSubRootResNet(block, subroot_num_blocks, num_classes=5,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 4种交通工具 + 1 none of them 
 
     def forward(self, x):
         root_logits, root_features = self.root_model(x)
@@ -249,12 +231,20 @@ class LightTreeResNet(nn.Module):
             
             return root_logits, subroot_logits
 
-@utils.register_model(dataset='cifar10', name='lighttreeresnet20')
-@utils.register_model(dataset='cifar100', name='lighttreeresnet20')
-class LightTreeResNet20(LightTreeResNet):
-    def __init__(self, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
-        super(LightTreeResNet20, self).__init__( 
-            BasicBlock, [2, 1], [1, 1], 
-            num_channels=num_channels, num_classes=num_classes,
-            linear_bias=linear_bias, bn_affine=bn_affine
-        )
+def lighttreeresnet(name, num_classes=10, pretrained=False, device='cpu'):
+    """
+    Returns suitable Light Resnet model from its name.
+    Arguments:
+        num_channels (int): number of input channels.
+        num_classes (int): number of target classes.
+        linear_bias (bool): whether to use a bias in the linear layer.
+        bn_affine (bool): whether to use affine batch normalization.
+        **kwargs: additional arguments.
+    Returns:
+        torch.nn.Module.
+    """
+    if name == 'lighttreeresnet20':
+        return LightRootResnet(BasicBlock, [2,1],[1,1], num_classes=num_classes, device=device)
+    
+    raise ValueError('Only lighttreeresnet20 is supported!')
+    return   
