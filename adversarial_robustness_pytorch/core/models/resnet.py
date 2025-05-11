@@ -161,3 +161,53 @@ def resnet(name, num_classes=10, pretrained=False, device='cpu'):
     
     raise ValueError('Only resnet18, resnet34, resnet50 and resnet101 are supported!')
     return
+
+
+# ---------------------------light resnet--------------------------------
+class LightResnet(nn.Module):
+    def __init__(self, block, num_blocks, num_channels=3, num_classes=10, device='cpu'):
+        super(LightResnet, self).__init__()
+        self.in_planes = 16
+
+        self.conv1 = nn.Conv2d(num_channels, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
+        self.avg_pool = nn.AvgPool2d(8)
+        self.fc = nn.Linear(64, num_classes)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.avg_pool(out)
+        out = out.view(out.size(0), -1)
+        out = self.fc(out)
+        return out
+
+def lightresnet(name, num_classes=10, pretrained=False, device='cpu'):
+    """
+    Returns suitable Resnet model from its name.
+    Arguments:
+        name (str): name of resnet architecture.
+        num_classes (int): number of target classes.
+        pretrained (bool): whether to use a pretrained model.
+        device (str or torch.device): device to work on.
+    Returns:
+        torch.nn.Module.
+    """
+    if name == 'lightresnet20':
+        return LightResnet(BasicBlock, [2, 2, 2], num_classes=num_classes, device=device)
+     
+    raise ValueError('Only lightresnet20 are supported!')
+    return
