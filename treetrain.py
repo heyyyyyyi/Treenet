@@ -33,8 +33,8 @@ class TreeClassifier(pl.LightningModule):
         scheduler_t: str = "cyclic",
         test_keys=None,
         alpha1: float = 0.9,
-        alpha2: float = 0.1,
-        alpha3: float = 0.1,
+        alpha2: float = 0.06,
+        alpha3: float = 0.04,
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,  # Strategy for alpha adjustment
     ):

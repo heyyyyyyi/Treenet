@@ -30,8 +30,8 @@ class TreeClassifier(pl.LightningModule):
         scheduler_t: str = "cyclic",
         test_keys=None,
         alpha1: float = 0.9,
-        alpha2: float = 0.1,
-        alpha3: float = 0.1,
+        alpha2: float = 0.06,
+        alpha3: float = 0.04,
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,  # Strategy for alpha adjustment
     ):
@@ -44,6 +44,9 @@ class TreeClassifier(pl.LightningModule):
 
         self.train_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
         self.val_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+        self.rootval_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+
+        self.latest_rootval_acc = 0.0  
 
         if test_keys is None:
             self.test_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
@@ -59,22 +62,59 @@ class TreeClassifier(pl.LightningModule):
             "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
         }
 
-    def update_alphas(self, current_epoch: int):
-        """
-        Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
-        """
-        progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
-        self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
-        alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
+    def update_alphas(self, root_acc, current_epoch):
+        # """
+        # Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
+        # """
+        # progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
+        # self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
+        # alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
 
-        # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
-        balance_ratio = self.alpha_update_strategy["balance_ratio"]
-        self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-        self.alpha3 = alpha23_total / (1 + balance_ratio)
+        # # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+        # balance_ratio = self.alpha_update_strategy["balance_ratio"]
+        # self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+        # self.alpha3 = alpha23_total / (1 + balance_ratio)
+        """
+        Dynamically update alpha1, alpha2, and alpha3 based on the root acc.
+        """
+        if 15 < current_epoch < 80:
+
+            if not isinstance(root_acc, torch.Tensor):
+                root_acc = torch.tensor(root_acc, device=self.device)
+
+            # # Sigmoid-based smoothing for alpha1
+            # threshold = 0.65  # Reference point for root accuracy
+            # sharpness = 10.0  # Controls the steepness of the sigmoid curve
+            # self.alpha1 = 0.9 / (1 + torch.exp(-sharpness * (threshold - root_acc)))  # Smoothly decrease alpha1
+
+            threshold = 0.65
+            sharpness = 14.0
+            min_alpha1, max_alpha1 = 0.01, 0.9
+
+            sig = torch.sigmoid(sharpness * (threshold - root_acc))
+            self.alpha1 = min_alpha1 + (max_alpha1 - min_alpha1) * sig
+
+            # Remaining weight for alpha2 and alpha3
+            alpha23_total = 1.0 - self.alpha1
+
+            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+            balance_ratio = self.alpha_update_strategy["balance_ratio"]
+            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+            self.alpha3 = alpha23_total / (1 + balance_ratio)
+
+        elif current_epoch >= 80:
+            progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
+            self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
+            alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
+
+            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+            balance_ratio = self.alpha_update_strategy["balance_ratio"]
+            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+            self.alpha3 = alpha23_total / (1 + balance_ratio)
 
     def forward(self, x):
-        _, subroot_logits = self.model(x)
-        return subroot_logits
+        root_logits, subroot_logits = self.model(x)
+        return root_logits, subroot_logits
 
     def configure_optimizers(self):
         optimizer = torch.optim.SGD(self.parameters(), **self.optimizer_cfg)
@@ -120,7 +160,9 @@ class TreeClassifier(pl.LightningModule):
         """
         Hook to update alphas at the start of each training epoch.
         """
-        self.update_alphas(self.current_epoch)
+        # get root validation accuracy on last epoch
+        self.update_alphas(self.latest_rootval_acc, self.current_epoch)
+        
         self.log("alpha1", self.alpha1, on_epoch=True)
         self.log("alpha2", self.alpha2, on_epoch=True)
         self.log("alpha3", self.alpha3, on_epoch=True)
@@ -139,17 +181,33 @@ class TreeClassifier(pl.LightningModule):
     
     def validation_step(self, batch, batch_idx, dataloader_idx=None):
         x, y = batch
-        logits = self(x)
-        preds = torch.argmax(logits, 1)
-        return {"preds": preds, "targets": y}
+        root_logits, subroot_logits = self(x)
+        root_preds = torch.argmax(root_logits, 1)
+        subroot_preds = torch.argmax(subroot_logits, 1)
+        return {"root_preds": root_preds, "subroot_preds": subroot_preds, "targets": y}
     
     def validation_step_end(self, batch_parts):
-        preds=batch_parts["preds"]
+        preds=batch_parts["subroot_preds"]
         targets=batch_parts["targets"]
 
         self.val_acc(preds, targets)
+        self.rootval_acc(batch_parts["root_preds"], targets)
         self.log("val.acc", self.val_acc, on_step=False, on_epoch=True)
-         
+
+    def validation_epoch_end(self, outputs):
+        """
+        Hook to compute and store the latest validation root accuracy.
+        """
+        # Compute the accumulated root validation accuracy
+        rootval_acc = self.rootval_acc.compute()
+        self.latest_rootval_acc = rootval_acc.item()  # Store it as a class attribute
+
+        # Log the root validation accuracy
+        self.log("rootval.acc", rootval_acc, on_epoch=True)
+
+        # Reset the metric for the next epoch
+        self.rootval_acc.reset()
+
     def test_step(self, batch, batch_idx, dataloader_idx=None):
         if isinstance(batch, dict):
             preds = {}

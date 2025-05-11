@@ -7,9 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
-from .. import utils
-
-from lightning import animal_classes, vehicle_classes
+from core import animal_classes, vehicle_classes
 
 class RootResNet(nn.Module):
     def __init__(self, block, num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True):
@@ -118,8 +116,6 @@ class TreeResNet(nn.Module):
             return root_logits, subroot_logits
 
     
-@utils.register_model(dataset='cifar10', name='treeresnet34')
-@utils.register_model(dataset='cifar100', name='treeresnet34')
 class TreeResNet34(TreeResNet): # 【3，4，6，3】 resnet34， 【3，4，3】 treeresnet34 +【3】；
     def __init__(self, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
         super(TreeResNet34, self).__init__( 
@@ -128,8 +124,6 @@ class TreeResNet34(TreeResNet): # 【3，4，6，3】 resnet34， 【3，4，3�
             linear_bias=linear_bias, bn_affine=bn_affine
         )
 
-@utils.register_model(dataset='cifar10', name='treeresnet18')
-@utils.register_model(dataset='cifar100', name='treeresnet18')
 class TreeResNet18(TreeResNet): # 【2, 2, 2, 2】 resnet18, 【2, 2, 1】 treeresnet18 +【1】；
     def __init__(self, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
         super(TreeResNet18, self).__init__( 
@@ -249,12 +243,11 @@ class LightTreeResNet(nn.Module):
             
             return root_logits, subroot_logits
 
-@utils.register_model(dataset='cifar10', name='lighttreeresnet20')
-@utils.register_model(dataset='cifar100', name='lighttreeresnet20')
-class LightTreeResNet20(LightTreeResNet):
-    def __init__(self, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
-        super(LightTreeResNet20, self).__init__( 
-            BasicBlock, [2, 1], [1, 1], 
-            num_channels=num_channels, num_classes=num_classes,
-            linear_bias=linear_bias, bn_affine=bn_affine
-        )
+def LightTreeResNet20(name, num_classes=10, pretrained=False, device='cpu'):
+    if name == 'lighttreeresnet20':
+       return LightTreeResNet(BasicBlock, [2, 1], [1, 1], 
+            num_classes=num_classes,
+            device=device)
+    raise ValueError('Only resnet18, resnet34, resnet50 and resnet101 are supported!')
+    return
+

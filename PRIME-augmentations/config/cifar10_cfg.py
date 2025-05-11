@@ -29,8 +29,8 @@ def get_config():
     config.accelerator = 'dp'
 
     config.alpha1 = 0.9
-    config.alpha2 = 0.1
-    config.alpha3 = 0.1
+    config.alpha2 = 0.06
+    config.alpha3 = 0.04
     
     # Training
     epochs = ml_collections.FieldReference(100)

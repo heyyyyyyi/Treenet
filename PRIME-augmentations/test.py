@@ -37,7 +37,7 @@ from utils.prime import PRIMEAugModule
 from setup import setup_all, _setup
 
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
-_WANDB_PROJECT = "common-corruptions-res18"
+_WANDB_PROJECT = "PRIME-light20"
 
 def validate_config(cfg):
     if cfg.dataset not in _DATASETS:
