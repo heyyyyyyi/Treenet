@@ -15,7 +15,7 @@ from .. import utils
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, in_planes, planes, stride=1, linear_bias=True, bn_affine=True):
+    def __init__(self, in_planes, planes, stride=1, linear_bias=True, bn_affine=True, downsample=None):
         super(BasicBlock, self).__init__()
 
         self.linear_bias = linear_bias
@@ -48,7 +48,7 @@ class BasicBlock(nn.Module):
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, in_planes, planes, stride=1, linear_bias=True, bn_affine=True):
+    def __init__(self, in_planes, planes, stride=1, linear_bias=True, bn_affine=True, downsample=None):
         super(Bottleneck, self).__init__()
 
         self.linear_bias = linear_bias
