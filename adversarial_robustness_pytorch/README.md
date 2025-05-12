@@ -84,3 +84,14 @@ If you use this code in your research, please cite the original works [[Paper](h
     url = {https://github.com/imrahulr/adversarial_robustness_pytorch}
 }
 ```
+
+-------------------------------------------set up --------------------
+- conda create -n adv python=3.8.5
+- conda activate adv
+- conda install pytorch=1.8.0 torchvision torchaudio cudatoolkit=10.2 -c pytorch
+
+- pip install git+https://github.com/fra31/auto-attack
+- pip install git+https://github.com/RobustBench/robustbench.git
+- pip install torch==1.8.0+cu101 torchvision==0.9.0+cu101 -f https://download.pytorch.org/whl/torch_stable.html (too old not support ada4)
+
+- download data from google https://drive.google.com/file/d/1LTw3Sb5QoiCCN-6Y5PEKkq9C9W60w-Hi/view
