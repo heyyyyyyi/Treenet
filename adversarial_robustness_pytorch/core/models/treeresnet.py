@@ -266,3 +266,4 @@ def lighttreeresnet(name, num_classes=10, pretrained=False, device='cpu'):
     
     raise ValueError('Only lighttreeresnet20 is supported!')
     return   
+
