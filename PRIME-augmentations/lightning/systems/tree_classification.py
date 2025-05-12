@@ -73,8 +73,8 @@ class TreeClassifier(pl.LightningModule):
         self.alpha3 = alpha23_total / (1 + balance_ratio)
 
     def forward(self, x):
-        _, subroot_logits = self.model(x)
-        return subroot_logits
+        root_logits, subroot_logits = self.model(x)
+        return root_logits, subroot_logits
 
     def configure_optimizers(self):
         optimizer = torch.optim.SGD(self.parameters(), **self.optimizer_cfg)
@@ -139,7 +139,7 @@ class TreeClassifier(pl.LightningModule):
     
     def validation_step(self, batch, batch_idx, dataloader_idx=None):
         x, y = batch
-        logits = self(x)
+        _, logits = self(x)
         preds = torch.argmax(logits, 1)
         return {"preds": preds, "targets": y}
     
@@ -154,13 +154,13 @@ class TreeClassifier(pl.LightningModule):
         if isinstance(batch, dict):
             preds = {}
             for key, (x, y) in flatten_dict.flatten(batch, reducer="dot").items():
-                logits = self(x)
+                _, logits = self(x)
                 preds[key] = torch.argmax(logits, 1)
 
             return {"targets": y, **preds}
         else:
             x, y = batch
-            logits = self(x)
+            _, logits = self(x)
             preds = torch.argmax(logits, 1)
             return {"preds": preds, "targets": y}
     
