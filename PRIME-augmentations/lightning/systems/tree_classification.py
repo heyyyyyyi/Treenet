@@ -212,13 +212,13 @@ class TreeClassifier(pl.LightningModule):
         if isinstance(batch, dict):
             preds = {}
             for key, (x, y) in flatten_dict.flatten(batch, reducer="dot").items():
-                logits = self(x)
+                _, logits = self(x)
                 preds[key] = torch.argmax(logits, 1)
 
             return {"targets": y, **preds}
         else:
             x, y = batch
-            logits = self(x)
+            _, logits = self(x)
             preds = torch.argmax(logits, 1)
             return {"preds": preds, "targets": y}
     
