@@ -36,7 +36,7 @@ class Trainer(object):
         super(Trainer, self).__init__()
         
         seed(args.seed)
-        if not tree:
+        if not tree_model:
             self.model = create_model(args.model, args.normalize, info, device)
         else: # suite trainer for tree 
             self.model = create_model(tree_model, args.normalize, info, device)

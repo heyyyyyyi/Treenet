@@ -1,7 +1,35 @@
 from .train import Trainer
-from .core import animal_classes, vehicle_classes
+from core import animal_classes, vehicle_classes
+import numpy as np
+import pandas as pd
+from tqdm import tqdm as tqdm
 
-class TreeEnsemble:
+import os
+import torch
+import torch.nn as nn
+
+from .rst import CosineLR
+
+from core.metrics import accuracy
+from core.models import create_model
+
+from .context import ctx_noparamgrad_and_eval
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def torch_isin(elements: torch.Tensor, test_elements: torch.Tensor) -> torch.Tensor:
+    """
+    Replacement for torch.isin for PyTorch < 1.10
+    """
+    test_elements = test_elements.to(elements.device)
+
+    elements_shape = elements.shape
+    elements_flat = elements.flatten()
+    test_elements_flat = test_elements.flatten()
+    result = (elements_flat[..., None] == test_elements_flat).any(-1)
+    return result.reshape(elements_shape)
+
+class TreeEnsemble(object):
     def __init__(self, 
         info, args,
         alpha1: float = 0.9,
@@ -10,14 +38,12 @@ class TreeEnsemble:
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,
     ):
-        trainer_lis = [
-            Trainer(info, args, tree_model='lighttreeresnet20_root'),
-            Trainer(info, args, tree_model='lighttreeresnet20_animal'),
-            Trainer(info, args, tree_model='lighttreeresnet20_vehicle'),
-        ]
-        self.root_trainer = trainer_lis[0]
-        self.animal_trainer = trainer_lis[1]
-        self.vehicle_trainer = trainer_lis[2]
+        
+        self.model = create_model(args.model, args.normalize, info, device)
+        self.root_trainer = Trainer( info, args, self.model.root_model)
+        self.animal_trainer = Trainer( info, args, self.model.subroot_animal)
+        self.vehicle_trainer = Trainer( info, args, self.model.subroot_vehicle)
+        
         self.alpha1 = alpha1
         self.alpha2 = alpha2
         self.alpha3 = alpha3
@@ -26,6 +52,43 @@ class TreeEnsemble:
         self.alpha_update_strategy = alpha_update_strategy or {
             "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
         }
+
+        self.params = args
+        self.init_optimizer(self.params.num_adv_epochs)
+        if self.params.pretrained_file is not None:
+            self.load_model(os.path.join(self.params.log_dir, self.params.pretrained_file, 'weights-best.pt'))
+        
+    
+    def init_optimizer(self, num_epochs):
+        """
+        Initialize optimizer and scheduler.
+        """
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.params.lr, weight_decay=self.params.weight_decay, 
+                                         momentum=0.9, nesterov=self.params.nesterov)
+        if num_epochs <= 0:
+            return
+        self.init_scheduler(num_epochs)
+    
+        
+    def init_scheduler(self, num_epochs):
+        """
+        Initialize scheduler.
+        """
+        if self.params.scheduler == 'cyclic':
+            num_samples = 50000 if 'cifar10' in self.params.data else 73257
+            num_samples = 100000 if 'tiny-imagenet' in self.params.data else num_samples
+            update_steps = int(np.floor(num_samples/self.params.batch_size) + 1)
+            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=self.params.lr, pct_start=0.25,
+                                                                 steps_per_epoch=update_steps, epochs=int(num_epochs))
+        elif self.params.scheduler == 'step':
+            self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer, gamma=0.1, milestones=[100, 105])    
+        elif self.params.scheduler == 'cosine':
+            self.scheduler = CosineLR(self.optimizer, max_lr=self.params.lr, epochs=int(num_epochs))
+        elif self.params.scheduler == 'cosinew':
+            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=self.params.lr, pct_start=0.025, 
+                                                                 total_steps=int(num_epochs))
+        else:
+            self.scheduler = None
 
     def update_alphas(self, current_epoch: int):
         """
@@ -41,44 +104,17 @@ class TreeEnsemble:
         self.alpha3 = alpha23_total / (1 + balance_ratio)
 
     def forward(self, x):
-        root_logits, root_features = self.root_trainer.model(x)
-        root_pred = torch.argmax(root_logits, dim=1)
+        root_logits, subroot_logits = self.model(x)
+        return root_logits, subroot_logits
 
-        subroot_logits = torch.zeros_like(root_logits)
-        animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
-        vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
-
-        is_animal = root_pred.unsqueeze(1) == animal_classes_index
-        is_animal = is_animal.any(dim=1)
-
-        is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
-        is_vehicle = is_vehicle.any(dim=1)
-
-        # Fix for animal subroot logits
-        if is_animal.any():
-            animal_rows = is_animal.nonzero(as_tuple=True)[0]
-            subroot_animal_logits = self.animal_trainer.model(root_features[animal_rows])
-            subroot_logits[animal_rows[:, None], animal_classes_index] = subroot_animal_logits[:, :-1]
-            unknown_value = subroot_animal_logits[:, -1] / len(vehicle_classes)
-            subroot_logits[animal_rows[:, None], vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
-
-        # Fix for vehicle subroot logits
-        if is_vehicle.any():
-            vehicle_rows = is_vehicle.nonzero(as_tuple=True)[0]
-            subroot_vehicle_logits = self.vehicle_trainer.model(root_features[vehicle_rows])
-            subroot_logits[vehicle_rows[:, None], vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
-            unknown_value = subroot_vehicle_logits[:, -1] / len(animal_classes)
-            subroot_logits[vehicle_rows[:, None], animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
-            
-            return root_logits, subroot_logits
-
-    def train(self, dataloaders, epoch=0, adversarial=False):
+    def train(self, dataloader, epoch=0, adversarial=False, verbose=True):
         """
         Train each trainer on a given (sub)set of data.
         """
         # update alpha every epoch 
         self.update_alphas(epoch)
         
+        metrics = pd.DataFrame()  # Initialize metrics
         for data in tqdm(dataloader, desc='Epoch {}: '.format(epoch), disable=not verbose):
             x, y = data
             x, y = x.to(device), y.to(device)
@@ -99,9 +135,7 @@ class TreeEnsemble:
             if self.params.scheduler in ['cyclic']:
                 self.scheduler.step()
             
-            #metrics = metrics.append(pd.DataFrame(batch_metrics, index=[0]), ignore_index=True)
             metrics = pd.concat([metrics, pd.DataFrame(batch_metrics, index=[0])], ignore_index=True)
-
         
         if self.params.scheduler in ['step', 'converge', 'cosine', 'cosinew']:
             self.scheduler.step()
@@ -111,10 +145,11 @@ class TreeEnsemble:
         """
         Standard training.
         """
+        self.optimizer.zero_grad()
         root_logits, subroot_logits = self(x)
         preds = torch.argmax(subroot_logits, 1)
 
-        root_loss = self.root_trainer.standard_loss(root_logits, y)
+        root_loss, _ = self.root_trainer.standard_loss(root_logits, y)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -126,13 +161,12 @@ class TreeEnsemble:
         is_vehicle = torch_isin(y, vehicle_classes_index)
 
         if is_animal.any():
-            subroot_loss_animal = self.subroot_animal.standard_loss(subroot_logits[is_animal], y[is_animal])
+            subroot_loss_animal, _ = self.animal_trainer.standard_loss(subroot_logits[is_animal], y[is_animal])
         if is_vehicle.any():
-            subroot_loss_vehicle = self.subroot_vehicle.standard_loss(subroot_logits[is_vehicle], y[is_vehicle])
+            subroot_loss_vehicle, _ = self.vehicle_trainer.standard_loss(subroot_logits[is_vehicle], y[is_vehicle])
 
-        total_loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
+        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
-        preds = out.detach()
         batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
         return loss, batch_metrics
 
@@ -140,39 +174,54 @@ class TreeEnsemble:
         """
         Adversarial training (Madry et al, 2017).
         """
-        root_logits, subroot_logits = self(x)
+        with ctx_noparamgrad_and_eval(self.model):
+            x_adv, _ = self.attack.perturb(x, y)
+
+        self.optimizer.zero_grad()
+        if self.params.keep_clean:
+            x_adv = torch.cat((x, x_adv), dim=0)
+            y_adv = torch.cat((y, y), dim=0)
+        else:
+            y_adv = y
+
+        root_logits, subroot_logits = self(x_adv)
         preds = torch.argmax(subroot_logits, 1)
 
-        root_loss = self.root_trainer.adversarial_loss(root_logits, y)
+        root_loss, _ = self.root_trainer.adversarial_loss(root_logits, y_adv)
 
-        subroot_loss_animal = torch.tensor(0.0, device=y.device)
-        subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
+        subroot_loss_animal = torch.tensor(0.0, device=y_adv.device)
+        subroot_loss_vehicle = torch.tensor(0.0, device=y_adv.device)
 
-        animal_classes_index = torch.tensor(animal_classes, device=y.device)
-        vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
+        animal_classes_index = torch.tensor(animal_classes, device=y_adv.device)
+        vehicle_classes_index = torch.tensor(vehicle_classes, device=y_adv.device)
 
-        is_animal = torch_isin(y, animal_classes_index)
-        is_vehicle = torch_isin(y, vehicle_classes_index)
+        is_animal = torch_isin(y_adv, animal_classes_index)
+        is_vehicle = torch_isin(y_adv, vehicle_classes_index)
 
         if is_animal.any():
-            subroot_loss_animal = self.subroot_animal.adversarial_loss(subroot_logits[is_animal], y[is_animal])
+            subroot_loss_animal, _ = self.animal_trainer.adversarial_loss(subroot_logits[is_animal], y_adv[is_animal])
         if is_vehicle.any():
-            subroot_loss_vehicle = self.subroot_vehicle.adversarial_loss(subroot_logits[is_vehicle], y[is_vehicle])
+            subroot_loss_vehicle, _ = self.vehicle_trainer.adversarial_loss(subroot_logits[is_vehicle], y_adv[is_vehicle])
 
-        total_loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
+        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
-        preds = out.detach()
-        batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
+        batch_metrics = {'loss': loss.item()}
+        if self.params.keep_clean:
+            preds_clean, preds_adv = preds[:len(x)], preds[len(x):]
+            batch_metrics.update({'clean_acc': accuracy(y, preds_clean), 'adversarial_acc': accuracy(y, preds_adv)})
+        else:
+            batch_metrics.update({'adversarial_acc': accuracy(y, preds)})    
         return loss, batch_metrics
     
     def trades_loss(self, x, y, beta):
         """
         TRADES training.
         """
+        self.optimizer.zero_grad()
         root_logits, subroot_logits = self(x)
         preds = torch.argmax(subroot_logits, 1)
 
-        root_loss = self.root_trainer.trades_loss(root_logits, y, beta=beta)
+        root_loss, _ = self.root_trainer.trades_loss(root_logits, y)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -184,13 +233,12 @@ class TreeEnsemble:
         is_vehicle = torch_isin(y, vehicle_classes_index)
 
         if is_animal.any():
-            subroot_loss_animal = self.subroot_animal.trades_loss(subroot_logits[is_animal], y[is_animal], beta=beta)
+            subroot_loss_animal, _ = self.animal_trainer.trades_loss(subroot_logits[is_animal], y[is_animal], beta)
         if is_vehicle.any():
-            subroot_loss_vehicle = self.subroot_vehicle.trades_loss(subroot_logits[is_vehicle], y[is_vehicle], beta=beta)
+            subroot_loss_vehicle, _ = self.vehicle_trainer.trades_loss(subroot_logits[is_vehicle], y[is_vehicle], beta)
 
-        total_loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
+        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
-        preds = out.detach()
         batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
         return loss, batch_metrics
 
@@ -198,10 +246,11 @@ class TreeEnsemble:
         """
         MART training.
         """
+        self.optimizer.zero_grad()
         root_logits, subroot_logits = self(x)
         preds = torch.argmax(subroot_logits, 1)
 
-        root_loss = self.root_trainer.mart_loss(root_logits, y, beta=beta)
+        root_loss, _ = self.root_trainer.mart_loss(root_logits, y)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -213,13 +262,12 @@ class TreeEnsemble:
         is_vehicle = torch_isin(y, vehicle_classes_index)
 
         if is_animal.any():
-            subroot_loss_animal = self.subroot_animal.mart_loss(subroot_logits[is_animal], y[is_animal], beta=beta)
+            subroot_loss_animal, _ = self.animal_trainer.mart_loss(subroot_logits[is_animal], y[is_animal], beta)
         if is_vehicle.any():
-            subroot_loss_vehicle = self.subroot_vehicle.mart_loss(subroot_logits[is_vehicle], y[is_vehicle], beta=beta)
+            subroot_loss_vehicle, _ = self.vehicle_trainer.mart_loss(subroot_logits[is_vehicle], y[is_vehicle], beta)
 
-        total_loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
+        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
-        preds = out.detach()
         batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
         return loss, batch_metrics
 
@@ -228,18 +276,32 @@ class TreeEnsemble:
         Evaluate performance of the model.
         """
         acc = 0.0
-        self.root_trainer.model.eval()
-        self.animal_trainer.model.eval()
-        self.vehicle_trainer.model.eval()
+        self.model.eval()
         
         for x, y in dataloader:
             x, y = x.to(device), y.to(device)
             if adversarial:
                 with ctx_noparamgrad_and_eval(self.model):
                     x_adv, _ = self.eval_attack.perturb(x, y)            
-                _, out = self(x_adv)
+                _, out = self.model(x_adv)
             else:
-                _, out = self(x)
+                _, out = self.model(x)
             acc += accuracy(y, out)
-        
-        return acc / len(dataloader.dataset) 
+        acc /= len(dataloader)
+        return acc
+    
+    def save_model(self, path):
+        """
+        Save model weights.
+        """
+        torch.save({'model_state_dict': self.model.state_dict()}, path)
+
+    
+    def load_model(self, path, load_opt=True):
+        """
+        Load model weights.
+        """
+        checkpoint = torch.load(path)
+        if 'model_state_dict' not in checkpoint:
+            raise RuntimeError('Model weights not found at {}.'.format(path))
+        self.model.load_state_dict(checkpoint['model_state_dict'])

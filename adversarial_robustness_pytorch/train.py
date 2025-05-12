@@ -21,6 +21,7 @@ from core.utils import format_time
 from core.utils import Logger
 from core.utils import parser_train
 from core.utils import Trainer
+from core.utils import TreeEnsemble
 from core.utils import seed
 
 
@@ -71,7 +72,10 @@ del train_dataset, test_dataset
 # Adversarial Training (AT, TRADES and MART)
 
 seed(args.seed)
-trainer = Trainer(info, args)
+if "tree" in args.model:
+    trainer = TreeEnsemble(info, args)
+else:
+    trainer = Trainer(info, args)
 last_lr = args.lr
 
 
