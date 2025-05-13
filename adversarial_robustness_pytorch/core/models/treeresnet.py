@@ -223,7 +223,7 @@ class LightTreeResNet(nn.Module):
             unknown_value = subroot_vehicle_logits[:, -1] / len(animal_classes)
             subroot_logits[vehicle_rows[:, None], animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
             
-            return root_logits, subroot_logits
+        return root_logits, subroot_logits
 
 def lighttreeresnet(name, num_classes=10, pretrained=False, device='cpu'):
     """

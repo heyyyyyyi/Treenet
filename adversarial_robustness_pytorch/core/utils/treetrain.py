@@ -83,16 +83,16 @@ class TreeEnsemble(object):
     
     @staticmethod
     def init_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step):
-        """
-        Initialize adversary.
-        """
         attack = create_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
         class wrapper(object):
             def __init__(self, model):
                 self.model = model
 
             def forward(self, x):
-                return self.model(x)[1]
+                outputs = self.model(x)
+                if outputs is None or len(outputs) < 2:
+                    raise ValueError("Model did not return expected outputs (root_logits, subroot_logits).")
+                return outputs[1]  # Ensure subroot_logits is returned
         
         wrapper_model = wrapper(model)
         criterion = nn.CrossEntropyLoss()
@@ -103,8 +103,8 @@ class TreeEnsemble(object):
             eval_attack = create_attack(wrapper_model, criterion, 'linf-pgd', 8/255, 20, 2/255)
         elif attack_type in ['fgm', 'l2-df']:
             eval_attack = create_attack(wrapper_model, criterion, 'l2-pgd', 128/255, 20, 15/255)
-        return attack,  eval_attack
-    
+        return attack, eval_attack
+        
     def init_optimizer(self, num_epochs):
         """
         Initialize optimizer and scheduler.
@@ -197,12 +197,11 @@ class TreeEnsemble(object):
         """
         Loss function for the model.
         """
-        
         root_logits, subroot_logits = logits_set
-        print(len(logits_set), len(root_logits), len(subroot_logits))
+        #print(len(logits_set), len(root_logits), len(subroot_logits), len(y))
         preds = torch.argmax(subroot_logits, 1)
 
-        root_loss, _ = self.root_trainer.criterion(root_logits, y)
+        root_loss = self.root_trainer.criterion(root_logits, y)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -214,9 +213,9 @@ class TreeEnsemble(object):
         is_vehicle = torch_isin(y, vehicle_classes_index)
 
         if is_animal.any():
-            subroot_loss_animal, _ = self.animal_trainer.criterion(subroot_logits[is_animal], y[is_animal])
+            subroot_loss_animal = self.animal_trainer.criterion(subroot_logits[is_animal], y[is_animal])
         if is_vehicle.any():
-            subroot_loss_vehicle, _ = self.vehicle_trainer.criterion(subroot_logits[is_vehicle], y[is_vehicle])
+            subroot_loss_vehicle = self.vehicle_trainer.criterion(subroot_logits[is_vehicle], y[is_vehicle])
 
         loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
