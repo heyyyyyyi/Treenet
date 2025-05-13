@@ -34,13 +34,12 @@ class Trainer(object):
     """
     def __init__(self, info, args, tree_model=False):
         super(Trainer, self).__init__()
-        
         seed(args.seed)
         if not tree_model:
             self.model = create_model(args.model, args.normalize, info, device)
         else: # suite trainer for tree 
-            self.model = create_model(tree_model, args.normalize, info, device)
-        
+            self.model = tree_model
+            
         self.params = args
         self.criterion = nn.CrossEntropyLoss()
         self.init_optimizer(self.params.num_adv_epochs)
@@ -50,8 +49,7 @@ class Trainer(object):
         
         self.attack, self.eval_attack = self.init_attack(self.model, self.criterion, self.params.attack, self.params.attack_eps, 
                                                          self.params.attack_iter, self.params.attack_step)
-        
-    
+                                                         
     @staticmethod
     def init_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step):
         """

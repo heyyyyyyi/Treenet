@@ -10,8 +10,11 @@ import torch.nn as nn
 
 from .rst import CosineLR
 
+from core.attacks import create_attack
 from core.metrics import accuracy
 from core.models import create_model
+
+from core.models.treeresnet import lighttreeresnet
 
 from .context import ctx_noparamgrad_and_eval
 
@@ -39,7 +42,8 @@ class TreeEnsemble(object):
         alpha_update_strategy: dict = None,
     ):
         
-        self.model = create_model(args.model, args.normalize, info, device)
+        self.model = self.create_tree_model(info, args, device)
+
         self.root_trainer = Trainer( info, args, self.model.root_model)
         self.animal_trainer = Trainer( info, args, self.model.subroot_animal)
         self.vehicle_trainer = Trainer( info, args, self.model.subroot_vehicle)
@@ -57,7 +61,49 @@ class TreeEnsemble(object):
         self.init_optimizer(self.params.num_adv_epochs)
         if self.params.pretrained_file is not None:
             self.load_model(os.path.join(self.params.log_dir, self.params.pretrained_file, 'weights-best.pt'))
+
+        self.attack, self.eval_attack = self.init_attack(self.model, self.loss_fn, self.params.attack, self.params.attack_eps, 
+                                                         self.params.attack_iter, self.params.attack_step)
         
+
+    def create_tree_model(self, info, args, device):
+        model = lighttreeresnet(args.model, num_classes=info['num_classes'], device=device)
+    
+        if args.normalize:
+            normalization_layer = Normalization(info['mean'], info['std']).to(device)
+            model.root_model = torch.nn.Sequential(normalization_layer, model.root_model)
+            model.subroot_animal = torch.nn.Sequential(normalization_layer, model.subroot_animal)
+            model.subroot_vehicle = torch.nn.Sequential(normalization_layer, model.subroot_vehicle)
+        else:
+            model.root_model = torch.nn.Sequential(model.root_model)
+            model.subroot_animal = torch.nn.Sequential(model.subroot_animal)
+            model.subroot_vehicle = torch.nn.Sequential(model.subroot_vehicle)
+        model = model.to(device)
+        return model
+    
+    @staticmethod
+    def init_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step):
+        """
+        Initialize adversary.
+        """
+        attack = create_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
+        class wrapper(object):
+            def __init__(self, model):
+                self.model = model
+
+            def forward(self, x):
+                return self.model(x)[1]
+        
+        wrapper_model = wrapper(model)
+        criterion = nn.CrossEntropyLoss()
+
+        if attack_type in ['linf-pgd', 'l2-pgd']:
+            eval_attack = create_attack(wrapper_model, criterion, attack_type, attack_eps, 2*attack_iter, attack_step)
+        elif attack_type in ['fgsm', 'linf-df']:
+            eval_attack = create_attack(wrapper_model, criterion, 'linf-pgd', 8/255, 20, 2/255)
+        elif attack_type in ['fgm', 'l2-df']:
+            eval_attack = create_attack(wrapper_model, criterion, 'l2-pgd', 128/255, 20, 15/255)
+        return attack,  eval_attack
     
     def init_optimizer(self, num_epochs):
         """
@@ -98,10 +144,14 @@ class TreeEnsemble(object):
         self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
         alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
 
-        # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
-        balance_ratio = self.alpha_update_strategy["balance_ratio"]
-        self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-        self.alpha3 = alpha23_total / (1 + balance_ratio)
+        # Use a custom strategy if provided
+        if callable(self.alpha_update_strategy):
+            self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
+        else:
+            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+            balance_ratio = self.alpha_update_strategy["balance_ratio"]
+            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+            self.alpha3 = alpha23_total / (1 + balance_ratio)
 
     def forward(self, x):
         root_logits, subroot_logits = self.model(x)
@@ -129,8 +179,10 @@ class TreeEnsemble(object):
             else:
                 loss, batch_metrics = self.standard_loss(x, y) 
             loss.backward()
+
             if self.params.clip_grad:
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.params.clip_grad)
+            
             self.optimizer.step()
             if self.params.scheduler in ['cyclic']:
                 self.scheduler.step()
@@ -140,16 +192,17 @@ class TreeEnsemble(object):
         if self.params.scheduler in ['step', 'converge', 'cosine', 'cosinew']:
             self.scheduler.step()
         return dict(metrics.mean())
-
-    def standard_loss(self, x, y):
+    
+    def loss_fn(self, logits_set, y):
         """
-        Standard training.
+        Loss function for the model.
         """
-        self.optimizer.zero_grad()
-        root_logits, subroot_logits = self(x)
+        
+        root_logits, subroot_logits = logits_set
+        print(len(logits_set), len(root_logits), len(subroot_logits))
         preds = torch.argmax(subroot_logits, 1)
 
-        root_loss, _ = self.root_trainer.standard_loss(root_logits, y)
+        root_loss, _ = self.root_trainer.criterion(root_logits, y)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -161,12 +214,23 @@ class TreeEnsemble(object):
         is_vehicle = torch_isin(y, vehicle_classes_index)
 
         if is_animal.any():
-            subroot_loss_animal, _ = self.animal_trainer.standard_loss(subroot_logits[is_animal], y[is_animal])
+            subroot_loss_animal, _ = self.animal_trainer.criterion(subroot_logits[is_animal], y[is_animal])
         if is_vehicle.any():
-            subroot_loss_vehicle, _ = self.vehicle_trainer.standard_loss(subroot_logits[is_vehicle], y[is_vehicle])
+            subroot_loss_vehicle, _ = self.vehicle_trainer.criterion(subroot_logits[is_vehicle], y[is_vehicle])
 
         loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
+        return loss
+
+    def standard_loss(self, x, y):
+        """
+        Standard training.
+        """
+        self.optimizer.zero_grad()
+        root_logits, subroot_logits = self.model(x)
+        preds = subroot_logits.detach()
+
+        loss = self.loss_fn([root_logits, subroot_logits], y)
         batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
         return loss, batch_metrics
 
@@ -177,6 +241,7 @@ class TreeEnsemble(object):
         with ctx_noparamgrad_and_eval(self.model):
             x_adv, _ = self.attack.perturb(x, y)
 
+        self.model.train()
         self.optimizer.zero_grad()
         if self.params.keep_clean:
             x_adv = torch.cat((x, x_adv), dim=0)
@@ -184,26 +249,10 @@ class TreeEnsemble(object):
         else:
             y_adv = y
 
-        root_logits, subroot_logits = self(x_adv)
-        preds = torch.argmax(subroot_logits, 1)
+        root_logits, subroot_logits = self.model(x_adv)
+        preds = subroot_logits.detach()
 
-        root_loss, _ = self.root_trainer.adversarial_loss(root_logits, y_adv)
-
-        subroot_loss_animal = torch.tensor(0.0, device=y_adv.device)
-        subroot_loss_vehicle = torch.tensor(0.0, device=y_adv.device)
-
-        animal_classes_index = torch.tensor(animal_classes, device=y_adv.device)
-        vehicle_classes_index = torch.tensor(vehicle_classes, device=y_adv.device)
-
-        is_animal = torch_isin(y_adv, animal_classes_index)
-        is_vehicle = torch_isin(y_adv, vehicle_classes_index)
-
-        if is_animal.any():
-            subroot_loss_animal, _ = self.animal_trainer.adversarial_loss(subroot_logits[is_animal], y_adv[is_animal])
-        if is_vehicle.any():
-            subroot_loss_vehicle, _ = self.vehicle_trainer.adversarial_loss(subroot_logits[is_vehicle], y_adv[is_vehicle])
-
-        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
+        loss = self.loss_fn([root_logits, subroot_logits], y_adv)
         
         batch_metrics = {'loss': loss.item()}
         if self.params.keep_clean:
@@ -215,7 +264,7 @@ class TreeEnsemble(object):
     
     def trades_loss(self, x, y, beta):
         """
-        TRADES training.
+        TRADES training. need to change 
         """
         self.optimizer.zero_grad()
         root_logits, subroot_logits = self(x)
@@ -244,7 +293,7 @@ class TreeEnsemble(object):
 
     def mart_loss(self, x, y, beta):
         """
-        MART training.
+        MART training. need to change 
         """
         self.optimizer.zero_grad()
         root_logits, subroot_logits = self(x)

@@ -24,7 +24,7 @@ def get_config():
 
     # Model
     config.save_dir = './PRIME/c10_prime/'
-    config.model.name = 'resnet18'
+    config.model.name = 'lighttreeresnet20'
     config.model.pretrained = False    
     config.accelerator = 'dp'
 

@@ -30,7 +30,7 @@ class RootResNet(nn.Module):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
         for stride in strides:
-            layers.append(block(self.in_planes, planes, stride, self.linear_bias, self.bn_affine))
+            layers.append(block(self.in_planes, planes, stride))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
@@ -64,7 +64,7 @@ class SubRootResNet(nn.Module):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
         for stride in strides:
-            layers.append(block(self.in_planes, planes, stride, self.linear_bias, self.bn_affine))
+            layers.append(block(self.in_planes, planes, stride))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
     def forward(self, x):
@@ -123,14 +123,14 @@ class TreeResNet(nn.Module):
 # ---------------------------light resnet--------------------------------
 
 class LightRootResnet(nn.Module):
-    def __init__(self, block, num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, device='cpu'):
+    def __init__(self, block, num_blocks, num_classes=10, linear_bias=True, bn_affine=True, device='cpu'):
         super(LightRootResnet, self).__init__()
         self.in_planes = 16
 
         self.linear_bias = linear_bias
         self.bn_affine = bn_affine
 
-        self.conv1 = nn.Conv2d(num_channels, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16, affine=self.bn_affine)
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
@@ -140,7 +140,7 @@ class LightRootResnet(nn.Module):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
         for stride in strides:
-            layers.append(block(self.in_planes, planes, stride, self.linear_bias, self.bn_affine))
+            layers.append(block(self.in_planes, planes, stride))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
@@ -174,7 +174,7 @@ class LightSubRootResNet(nn.Module):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
         for stride in strides:
-            layers.append(block(self.in_planes, planes, stride, self.linear_bias, self.bn_affine))
+            layers.append(block(self.in_planes, planes, stride))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
     def forward(self, x):
@@ -187,9 +187,9 @@ class LightSubRootResNet(nn.Module):
 
 # samilar to TreeResNet, change the root model to LightRootResnet, and subroot model to LightSubRootResNet
 class LightTreeResNet(nn.Module):
-    def __init__(self, block, root_num_blocks, subroot_num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, device='cpu'):
+    def __init__(self, block, root_num_blocks, subroot_num_blocks, num_classes=10, linear_bias=True, bn_affine=True, device='cpu'):
         super(LightTreeResNet, self).__init__()
-        self.root_model = LightRootResnet(block, root_num_blocks, num_channels=num_channels, num_classes=num_classes,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 10分类 
+        self.root_model = LightRootResnet(block, root_num_blocks, num_classes=num_classes,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 10分类 
         self.subroot_animal = LightSubRootResNet(block, subroot_num_blocks, num_classes=7,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 6种动物 + 1 none of them
         self.subroot_vehicle = LightSubRootResNet(block, subroot_num_blocks, num_classes=5,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 4种交通工具 + 1 none of them 
 
@@ -229,16 +229,19 @@ def lighttreeresnet(name, num_classes=10, pretrained=False, device='cpu'):
     """
     Returns suitable Light Resnet model from its name.
     Arguments:
-        num_channels (int): number of input channels.
         num_classes (int): number of target classes.
-        linear_bias (bool): whether to use a bias in the linear layer.
-        bn_affine (bool): whether to use affine batch normalization.
-        **kwargs: additional arguments.
+        pretrained (bool): whether to load pretrained weights (not implemented).
+        device (str): device to use ('cpu' or 'cuda').
     Returns:
         torch.nn.Module.
     """
     if name == 'lighttreeresnet20':
-        return LightRootResnet(BasicBlock, [2,1],[1,1], num_classes=num_classes, device=device)
+        return LightTreeResNet(
+            BasicBlock, 
+            root_num_blocks=[2, 1], 
+            subroot_num_blocks=[1, 1], 
+            num_classes=num_classes, 
+            device=device
+        )
     
     raise ValueError('Only lighttreeresnet20 is supported!')
-    return   
