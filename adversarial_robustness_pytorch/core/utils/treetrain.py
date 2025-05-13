@@ -1,12 +1,24 @@
-import flatten_dict
-import ml_collections
-import torch
-import torch.nn.functional as F
-import torchmetrics
-from torch import nn
-import pytorch_lightning as pl
+from .train import Trainer
+from core import animal_classes, vehicle_classes
+import numpy as np
+import pandas as pd
+from tqdm import tqdm as tqdm
 
-from lightning import animal_classes, vehicle_classes
+import os
+import torch
+import torch.nn as nn
+
+from .rst import CosineLR
+
+from core.attacks import create_attack
+from core.metrics import accuracy
+from core.models import create_model
+
+from core.models.treeresnet import lighttreeresnet
+
+from .context import ctx_noparamgrad_and_eval
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def torch_isin(elements: torch.Tensor, test_elements: torch.Tensor) -> torch.Tensor:
     """
@@ -20,39 +32,22 @@ def torch_isin(elements: torch.Tensor, test_elements: torch.Tensor) -> torch.Ten
     result = (elements_flat[..., None] == test_elements_flat).any(-1)
     return result.reshape(elements_shape)
 
-
-class TreeClassifier(pl.LightningModule):
-    def __init__(
-        self,
-        model: nn.Module = None,
-        optimizer_cfg: ml_collections.ConfigDict = None,
-        lr_schedule_cfg: ml_collections.ConfigDict = None,
-        scheduler_t: str = "cyclic",
-        test_keys=None,
+class TreeEnsemble(object):
+    def __init__(self, 
+        info, args,
         alpha1: float = 0.9,
-        alpha2: float = 0.06,
-        alpha3: float = 0.04,
+        alpha2: float = 0.1,
+        alpha3: float = 0.1,
         max_epochs: int = 100,  # Total number of training epochs
-        alpha_update_strategy: dict = None,  # Strategy for alpha adjustment
+        alpha_update_strategy: dict = None,
     ):
-        super().__init__()
-        self.model = model
+        
+        self.model = self.create_tree_model(info, args, device)
 
-        self.optimizer_cfg = optimizer_cfg
-        self.lr_schedule_cfg = lr_schedule_cfg
-        self.scheduler_t = scheduler_t
-
-        self.train_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
-        self.val_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
-        self.rootval_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
-
-        self.latest_rootval_acc = 0.0  
-
-        if test_keys is None:
-            self.test_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
-        else:
-            self.test_acc = nn.ModuleDict({key: torchmetrics.Accuracy() for key in test_keys})
-
+        self.root_trainer = Trainer( info, args, self.model.root_model)
+        self.animal_trainer = Trainer( info, args, self.model.subroot_animal)
+        self.vehicle_trainer = Trainer( info, args, self.model.subroot_vehicle)
+        
         self.alpha1 = alpha1
         self.alpha2 = alpha2
         self.alpha3 = alpha3
@@ -62,35 +57,100 @@ class TreeClassifier(pl.LightningModule):
             "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
         }
 
-    def update_alphas(self, root_acc, current_epoch):
+        self.params = args
+        self.init_optimizer(self.params.num_adv_epochs)
+        if self.params.pretrained_file is not None:
+            self.load_model(os.path.join(self.params.log_dir, self.params.pretrained_file, 'weights-best.pt'))
+
+        self.attack, self.eval_attack = self.init_attack(self.model, self.loss_fn, self.params.attack, self.params.attack_eps, 
+                                                         self.params.attack_iter, self.params.attack_step)
+        
+
+    def create_tree_model(self, info, args, device):
+        model = lighttreeresnet(args.model, num_classes=info['num_classes'], device=device)
+    
+        if args.normalize:
+            normalization_layer = Normalization(info['mean'], info['std']).to(device)
+            model.root_model = torch.nn.Sequential(normalization_layer, model.root_model)
+            model.subroot_animal = torch.nn.Sequential(normalization_layer, model.subroot_animal)
+            model.subroot_vehicle = torch.nn.Sequential(normalization_layer, model.subroot_vehicle)
+        else:
+            model.root_model = torch.nn.Sequential(model.root_model)
+            model.subroot_animal = torch.nn.Sequential(model.subroot_animal)
+            model.subroot_vehicle = torch.nn.Sequential(model.subroot_vehicle)
+        model = model.to(device)
+        return model
+    
+    @staticmethod
+    def init_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step):
+        attack = create_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
+        class wrapper(object):
+            def __init__(self, model):
+                self.model = model
+
+            def forward(self, x):
+                outputs = self.model(x)
+                if outputs is None or len(outputs) < 2:
+                    raise ValueError("Model did not return expected outputs (root_logits, subroot_logits).")
+                return outputs[1]  # Ensure subroot_logits is returned
+                
+            def __call__(self, x):
+                return self.forward(x)
+        
+        wrapper_model = wrapper(model)
+        criterion = nn.CrossEntropyLoss()
+
+        if attack_type in ['linf-pgd', 'l2-pgd']:
+            eval_attack = create_attack(wrapper_model, criterion, attack_type, attack_eps, 2*attack_iter, attack_step)
+        elif attack_type in ['fgsm', 'linf-df']:
+            eval_attack = create_attack(wrapper_model, criterion, 'linf-pgd', 8/255, 20, 2/255)
+        elif attack_type in ['fgm', 'l2-df']:
+            eval_attack = create_attack(wrapper_model, criterion, 'l2-pgd', 128/255, 20, 15/255)
+        return attack, eval_attack
+        
+    def init_optimizer(self, num_epochs):
         """
-        Dynamically update alpha1, alpha2, and alpha3 based on the root acc.
+        Initialize optimizer and scheduler.
         """
-        if 15 < current_epoch < 80:
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.params.lr, weight_decay=self.params.weight_decay, 
+                                         momentum=0.9, nesterov=self.params.nesterov)
+        if num_epochs <= 0:
+            return
+        self.init_scheduler(num_epochs)
+    
+        
+    def init_scheduler(self, num_epochs):
+        """
+        Initialize scheduler.
+        """
+        if self.params.scheduler == 'cyclic':
+            num_samples = 50000 if 'cifar10' in self.params.data else 73257
+            num_samples = 100000 if 'tiny-imagenet' in self.params.data else num_samples
+            update_steps = int(np.floor(num_samples/self.params.batch_size) + 1)
+            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=self.params.lr, pct_start=0.25,
+                                                                 steps_per_epoch=update_steps, epochs=int(num_epochs))
+        elif self.params.scheduler == 'step':
+            self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer, gamma=0.1, milestones=[100, 105])    
+        elif self.params.scheduler == 'cosine':
+            self.scheduler = CosineLR(self.optimizer, max_lr=self.params.lr, epochs=int(num_epochs))
+        elif self.params.scheduler == 'cosinew':
+            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=self.params.lr, pct_start=0.025, 
+                                                                 total_steps=int(num_epochs))
+        else:
+            self.scheduler = None
 
-            if not isinstance(root_acc, torch.Tensor):
-                root_acc = torch.tensor(root_acc, device=self.device)
+    def update_alphas(self, current_epoch: int):
+        """
+        Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
+        """
+        progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
+        self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
+        alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
 
-            threshold = 0.65
-            sharpness = 14.0
-            min_alpha1, max_alpha1 = 0.01, 0.9
-
-            sig = torch.sigmoid(sharpness * (threshold - root_acc))
-            self.alpha1 = min_alpha1 + (max_alpha1 - min_alpha1) * sig
-
-            # Remaining weight for alpha2 and alpha3
-            alpha23_total = 1.0 - self.alpha1
-
-            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
-            balance_ratio = self.alpha_update_strategy["balance_ratio"]
-            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-            self.alpha3 = alpha23_total / (1 + balance_ratio)
-
-        elif current_epoch >= 80:
-            progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
-            self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
-            alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
-
+        # Use a custom strategy if provided
+        if callable(self.alpha_update_strategy):
+            self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
+        else:
             # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
             balance_ratio = self.alpha_update_strategy["balance_ratio"]
             self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
@@ -100,26 +160,51 @@ class TreeClassifier(pl.LightningModule):
         root_logits, subroot_logits = self.model(x)
         return root_logits, subroot_logits
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.SGD(self.parameters(), **self.optimizer_cfg)
-        if self.scheduler_t == "cyclic":
-            scheduler = {
-                "scheduler": torch.optim.lr_scheduler.OneCycleLR(optimizer, **self.lr_schedule_cfg),
-                "interval": "step",
-            }
-        elif self.scheduler_t == "piecewise_constant":
-            scheduler = {
-                "scheduler": torch.optim.lr_scheduler.StepLR(optimizer, **self.lr_schedule_cfg),
-                "interval": "epoch",
-            }
-        return [optimizer], [scheduler]
+    def train(self, dataloader, epoch=0, adversarial=False, verbose=True):
+        """
+        Train each trainer on a given (sub)set of data.
+        """
+        # update alpha every epoch 
+        self.update_alphas(epoch)
+        
+        metrics = pd.DataFrame()  # Initialize metrics
+        for data in tqdm(dataloader, desc='Epoch {}: '.format(epoch), disable=not verbose):
+            x, y = data
+            x, y = x.to(device), y.to(device)
 
-    def training_step(self, batch, batch_idx):
-        x, y = batch
-        root_logits, subroot_logits = self(x)
+            if adversarial:
+                if self.params.beta is not None and self.params.mart:
+                    loss, batch_metrics = self.mart_loss(x, y, beta=self.params.beta)
+                elif self.params.beta is not None:
+                    loss, batch_metrics = self.trades_loss(x, y, beta=self.params.beta)
+                else:
+                    loss, batch_metrics = self.adversarial_loss(x, y)
+            else:
+                loss, batch_metrics = self.standard_loss(x, y) 
+            loss.backward()
+
+            if self.params.clip_grad:
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.params.clip_grad)
+            
+            self.optimizer.step()
+            if self.params.scheduler in ['cyclic']:
+                self.scheduler.step()
+            
+            metrics = pd.concat([metrics, pd.DataFrame(batch_metrics, index=[0])], ignore_index=True)
+        
+        if self.params.scheduler in ['step', 'converge', 'cosine', 'cosinew']:
+            self.scheduler.step()
+        return dict(metrics.mean())
+    
+    def loss_fn(self, logits_set, y):
+        """
+        Loss function for the model.
+        """
+        root_logits, subroot_logits = logits_set
+        #print(len(logits_set), len(root_logits), len(subroot_logits), len(y))
         preds = torch.argmax(subroot_logits, 1)
 
-        root_loss = F.cross_entropy(root_logits, y)
+        root_loss = self.root_trainer.criterion(root_logits, y)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -131,115 +216,143 @@ class TreeClassifier(pl.LightningModule):
         is_vehicle = torch_isin(y, vehicle_classes_index)
 
         if is_animal.any():
-            subroot_loss_animal = F.cross_entropy(subroot_logits[is_animal], y[is_animal])
+            subroot_loss_animal = self.animal_trainer.criterion(subroot_logits[is_animal], y[is_animal])
         if is_vehicle.any():
-            subroot_loss_vehicle = F.cross_entropy(subroot_logits[is_vehicle], y[is_vehicle])
+            subroot_loss_vehicle = self.vehicle_trainer.criterion(subroot_logits[is_vehicle], y[is_vehicle])
 
-
-        total_loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
+        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
-        return {'loss': total_loss, 'preds': preds, 'targets': y}
-
-    def on_train_epoch_start(self):
-        """
-        Hook to update alphas at the start of each training epoch.
-        """
-        # get root validation accuracy on last epoch
-        self.update_alphas(self.latest_rootval_acc, self.current_epoch)
-        
-        self.log("alpha1", self.alpha1, on_epoch=True)
-        self.log("alpha2", self.alpha2, on_epoch=True)
-        self.log("alpha3", self.alpha3, on_epoch=True)
-    
-    def training_step_end(self, batch_parts):
-        preds = batch_parts["preds"]
-        targets = batch_parts["targets"]
-        losses = batch_parts["loss"]
-
-        loss = losses.mean()
-        self.train_acc(preds, targets)
-        self.log("train.acc", self.train_acc, on_step=True)
-        self.log("train.loss", loss, on_step=True)
-
         return loss
-    
-    def validation_step(self, batch, batch_idx, dataloader_idx=None):
-        x, y = batch
-        root_logits, subroot_logits = self(x)
-        root_preds = torch.argmax(root_logits, 1)
-        subroot_preds = torch.argmax(subroot_logits, 1)
-        return {"root_preds": root_preds, "subroot_preds": subroot_preds, "targets": y}
-    
-    def validation_step_end(self, batch_parts):
-        preds=batch_parts["subroot_preds"]
-        targets=batch_parts["targets"]
 
-        self.val_acc(preds, targets)
-        self.rootval_acc(batch_parts["root_preds"], targets)
-        self.log("val.acc", self.val_acc, on_step=False, on_epoch=True)
-
-    def validation_epoch_end(self, outputs):
+    def standard_loss(self, x, y):
         """
-        Hook to compute and store the latest validation root accuracy.
+        Standard training.
         """
-        # Compute the accumulated root validation accuracy
-        rootval_acc = self.rootval_acc.compute()
-        self.latest_rootval_acc = rootval_acc.item()  # Store it as a class attribute
+        self.optimizer.zero_grad()
+        root_logits, subroot_logits = self.model(x)
+        preds = subroot_logits.detach()
 
-        # Log the root validation accuracy
-        self.log("rootval.acc", rootval_acc, on_epoch=True)
+        loss = self.loss_fn([root_logits, subroot_logits], y)
+        batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
+        return loss, batch_metrics
 
-        # Reset the metric for the next epoch
-        self.rootval_acc.reset()
+    def adversarial_loss(self, x, y):
+        """
+        Adversarial training (Madry et al, 2017).
+        """
+        with ctx_noparamgrad_and_eval(self.model):
+            x_adv, _ = self.attack.perturb(x, y)
 
-    def test_step(self, batch, batch_idx, dataloader_idx=None):
-        if isinstance(batch, dict):
-            preds = {}
-            for key, (x, y) in flatten_dict.flatten(batch, reducer="dot").items():
-                _, logits = self(x)
-                preds[key] = torch.argmax(logits, 1)
-
-            return {"targets": y, **preds}
+        self.model.train()
+        self.optimizer.zero_grad()
+        if self.params.keep_clean:
+            x_adv = torch.cat((x, x_adv), dim=0)
+            y_adv = torch.cat((y, y), dim=0)
         else:
-            x, y = batch
-            _, logits = self(x)
-            preds = torch.argmax(logits, 1)
-            return {"preds": preds, "targets": y}
+            y_adv = y
+
+        root_logits, subroot_logits = self.model(x_adv)
+        preds = subroot_logits.detach()
+
+        loss = self.loss_fn([root_logits, subroot_logits], y_adv)
+        
+        batch_metrics = {'loss': loss.item()}
+        if self.params.keep_clean:
+            preds_clean, preds_adv = preds[:len(x)], preds[len(x):]
+            batch_metrics.update({'clean_acc': accuracy(y, preds_clean), 'adversarial_acc': accuracy(y, preds_adv)})
+        else:
+            batch_metrics.update({'adversarial_acc': accuracy(y, preds)})    
+        return loss, batch_metrics
     
-    def test_step_end(self, batch_parts):
-        if len(batch_parts.keys()) > 2:  # 多任务预测
-            targets = batch_parts.pop("targets")
-            avg_acc = []
+    def trades_loss(self, x, y, beta):
+        """
+        TRADES training. need to change 
+        """
+        self.optimizer.zero_grad()
+        root_logits, subroot_logits = self(x)
+        preds = torch.argmax(subroot_logits, 1)
 
-            for key, preds in batch_parts.items():  # 遍历每个任务
-                cur_acc = self.test_acc[key](preds, targets)
-                self.log(f"test.{key}", self.test_acc[key], on_step=False, on_epoch=True)
-                avg_acc.append(cur_acc)
+        root_loss, _ = self.root_trainer.trades_loss(root_logits, y)
 
-                # 计算每个任务的每个类别的准确率
-                unique_labels = torch.unique(targets)
-                for label in unique_labels:
-                    label_mask = targets == label
-                    label_preds = preds[label_mask]
-                    label_targets = targets[label_mask]
-                    if label_targets.numel() > 0:  # 避免除零错误
-                        label_acc = (label_preds == label_targets).float().mean()
-                        self.log(f"test.{key}.label_{label}.acc", label_acc, on_step=False, on_epoch=True)
+        subroot_loss_animal = torch.tensor(0.0, device=y.device)
+        subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
 
-            # 记录所有任务的平均准确率
-            self.log("test_avg.acc", torch.tensor(avg_acc).mean(), on_step=False, on_epoch=True)
-        else:  # 单任务预测
-            preds = batch_parts["preds"]
-            targets = batch_parts["targets"]
-            self.test_acc(preds, targets)
-            self.log("test.acc", self.test_acc, on_step=False, on_epoch=True)
+        animal_classes_index = torch.tensor(animal_classes, device=y.device)
+        vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
 
-            # 计算单任务的每个类别的准确率
-            unique_labels = torch.unique(targets)
-            for label in unique_labels:
-                label_mask = targets == label
-                label_preds = preds[label_mask]
-                label_targets = targets[label_mask]
-                if label_targets.numel() > 0:  # 避免除零错误
-                    label_acc = (label_preds == label_targets).float().mean()
-                    self.log(f"test.label_{label}.acc", label_acc, on_step=False, on_epoch=True)
+        is_animal = torch_isin(y, animal_classes_index)
+        is_vehicle = torch_isin(y, vehicle_classes_index)
+
+        if is_animal.any():
+            subroot_loss_animal, _ = self.animal_trainer.trades_loss(subroot_logits[is_animal], y[is_animal], beta)
+        if is_vehicle.any():
+            subroot_loss_vehicle, _ = self.vehicle_trainer.trades_loss(subroot_logits[is_vehicle], y[is_vehicle], beta)
+
+        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
+        
+        batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
+        return loss, batch_metrics
+
+    def mart_loss(self, x, y, beta):
+        """
+        MART training. need to change 
+        """
+        self.optimizer.zero_grad()
+        root_logits, subroot_logits = self(x)
+        preds = torch.argmax(subroot_logits, 1)
+
+        root_loss, _ = self.root_trainer.mart_loss(root_logits, y)
+
+        subroot_loss_animal = torch.tensor(0.0, device=y.device)
+        subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
+
+        animal_classes_index = torch.tensor(animal_classes, device=y.device)
+        vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
+
+        is_animal = torch_isin(y, animal_classes_index)
+        is_vehicle = torch_isin(y, vehicle_classes_index)
+
+        if is_animal.any():
+            subroot_loss_animal, _ = self.animal_trainer.mart_loss(subroot_logits[is_animal], y[is_animal], beta)
+        if is_vehicle.any():
+            subroot_loss_vehicle, _ = self.vehicle_trainer.mart_loss(subroot_logits[is_vehicle], y[is_vehicle], beta)
+
+        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
+        
+        batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
+        return loss, batch_metrics
+
+    def eval(self, dataloader, adversarial=False):
+        """
+        Evaluate performance of the model.
+        """
+        acc = 0.0
+        self.model.eval()
+        
+        for x, y in dataloader:
+            x, y = x.to(device), y.to(device)
+            if adversarial:
+                with ctx_noparamgrad_and_eval(self.model):
+                    x_adv, _ = self.eval_attack.perturb(x, y)            
+                _, out = self.model(x_adv)
+            else:
+                _, out = self.model(x)
+            acc += accuracy(y, out)
+        acc /= len(dataloader)
+        return acc
+    
+    def save_model(self, path):
+        """
+        Save model weights.
+        """
+        torch.save({'model_state_dict': self.model.state_dict()}, path)
+
+    
+    def load_model(self, path, load_opt=True):
+        """
+        Load model weights.
+        """
+        checkpoint = torch.load(path)
+        if 'model_state_dict' not in checkpoint:
+            raise RuntimeError('Model weights not found at {}.'.format(path))
+        self.model.load_state_dict(checkpoint['model_state_dict'])

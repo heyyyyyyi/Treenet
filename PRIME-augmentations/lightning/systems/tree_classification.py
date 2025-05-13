@@ -61,6 +61,7 @@ class TreeClassifier(pl.LightningModule):
         self.alpha_update_strategy = alpha_update_strategy or {
             "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
         }
+        self.root_loss = 0.0
 
     def update_alphas(self, root_acc, current_epoch):
         # """
@@ -136,6 +137,7 @@ class TreeClassifier(pl.LightningModule):
         preds = torch.argmax(subroot_logits, 1)
 
         root_loss = F.cross_entropy(root_logits, y)
+        self.root_loss = root_loss.item()
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -166,6 +168,8 @@ class TreeClassifier(pl.LightningModule):
         self.log("alpha1", self.alpha1, on_epoch=True)
         self.log("alpha2", self.alpha2, on_epoch=True)
         self.log("alpha3", self.alpha3, on_epoch=True)
+        self.log("root_loss", self.root_loss, on_epoch=True)
+        
     
     def training_step_end(self, batch_parts):
         preds = batch_parts["preds"]
