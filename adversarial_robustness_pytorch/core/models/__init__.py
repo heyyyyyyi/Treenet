@@ -39,7 +39,11 @@ def create_model(name, normalize, info, device):
         backbone = ti_preact_resnet(name, num_classes=info['num_classes'], device=device)
     
     elif info['data'] in DATASETS and info['data'] not in ['tiny-imagenet']:
-        if 'light' in name:
+        # add treeresnet and light resnet
+        if 'tree' in name:
+            backbone = lighttreeresnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
+            return backbone 
+        elif 'light' in name:
             backbone = lightresnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
         elif 'preact-resnet' in name and 'swish' not in name:
             backbone = preact_resnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
@@ -56,7 +60,7 @@ def create_model(name, normalize, info, device):
     
     else:
         raise ValueError('Models for {} not yet supported!'.format(info['data']))
-
+        
     if normalize:
         model = torch.nn.Sequential(Normalization(info['mean'], info['std']), backbone)
     else:
@@ -66,21 +70,3 @@ def create_model(name, normalize, info, device):
     model = model.to(device)
     return model
  
-#  def create_tree_model(name, normalize, info, device):
-#     if 'lighttreeresnet' in name:
-#         model = lighttreeresnet(name, num_classes=info['num_classes'], device=device)
-#     if normalize:
-#         root_model = torch.nn.Sequential(Normalization(info['mean'], info['std']), model.root_model)
-#         animal_model = torch.nn.Sequential(Normalization(info['mean'], info['std']), model.subroot_animal)
-#         vehicle_model = torch.nn.Sequential(Normalization(info['mean'], info['std']), model.subroot_vehicle)
-#     else:
-#         root_model = torch.nn.Sequential(model.root_model)
-#         animal_model = torch.nn.Sequential(model.subroot_animal)
-#         vehicle_model = torch.nn.Sequential(model.subroot_vehicle)
-#     root_model = torch.nn.DataParallel(root_model)
-#     animal_model = torch.nn.DataParallel(animal_model)
-#     vehicle_model = torch.nn.DataParallel(vehicle_model)
-#     root_model = root_model.to(device)
-#     animal_model = animal_model.to(device)
-#     vehicle_model = vehicle_model.to(device)
-#     return root_model, animal_model, vehicle_model

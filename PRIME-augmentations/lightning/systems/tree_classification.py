@@ -44,7 +44,7 @@ class TreeClassifier(pl.LightningModule):
 
         self.train_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
         self.val_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
-        self.root_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+        self.val_root_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
 
         if test_keys is None:
             self.test_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
@@ -59,7 +59,7 @@ class TreeClassifier(pl.LightningModule):
         self.alpha_update_strategy = alpha_update_strategy or {
             "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
         }
-        self.root_loss = 0.0
+        self.root_acc = 0.0
 
     def update_alphas(self, current_epoch: int, root_acc: float):
         """
@@ -90,10 +90,11 @@ class TreeClassifier(pl.LightningModule):
         balance_ratio = self.alpha_update_strategy["balance_ratio"]
         self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
         self.alpha3 = alpha23_total / (1 + balance_ratio)
-            
 
-            
-
+        self.log("alpha1_updated", self.alpha1, on_epoch=True)  # ✅ Log updated alpha1
+        self.log("alpha2_updated", self.alpha2, on_epoch=True)  # ✅ Log updated alpha2
+        self.log("alpha3_updated", self.alpha3, on_epoch=True)  # ✅ Log updated alpha3
+        
     def forward(self, x):
         root_logits, subroot_logits = self.model(x)
         return root_logits, subroot_logits
@@ -119,6 +120,7 @@ class TreeClassifier(pl.LightningModule):
 
         root_loss = F.cross_entropy(root_logits, y)
         self.root_loss = root_loss.item()
+        self.log("train.root_loss", self.root_loss, on_step=True)  # ✅ Log root_loss during training
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -143,11 +145,9 @@ class TreeClassifier(pl.LightningModule):
         """
         Hook to update alphas at the start of each training epoch.
         """
-        self.update_alphas(self.current_epoch, self.root_acc)
         self.log("alpha1", self.alpha1, on_epoch=True)
         self.log("alpha2", self.alpha2, on_epoch=True)
         self.log("alpha3", self.alpha3, on_epoch=True)
-        self.log("root_loss", self.root_loss, on_epoch=True)
         
     
     def training_step_end(self, batch_parts):
@@ -175,9 +175,15 @@ class TreeClassifier(pl.LightningModule):
         targets=batch_parts["targets"]
 
         self.val_acc(preds, targets)
-        self.root_acc(root_preds, targets)
+        self.val_root_acc(root_preds, targets)
         self.log("val.acc", self.val_acc, on_step=False, on_epoch=True)
-        self.log("root_acc", self.root_acc, on_step=False, on_epoch=True)
+        self.log("root_acc", self.val_root_acc, on_step=False, on_epoch=True)
+
+    def validation_epoch_end(self, outputs):
+        root_acc = self.val_root_acc.compute().item()  # ✅ get value
+        self.update_alphas(self.current_epoch, root_acc)  # ✅ 动态调整
+        self.val_root_acc.reset()  # ✅ 重置，避免累计
+        self.val_acc.reset()  # ✅ Reset val_acc to avoid cumulative results
          
     def test_step(self, batch, batch_idx, dataloader_idx=None):
         if isinstance(batch, dict):
@@ -215,11 +221,13 @@ class TreeClassifier(pl.LightningModule):
 
             # 记录所有任务的平均准确率
             self.log("test_avg.acc", torch.tensor(avg_acc).mean(), on_step=False, on_epoch=True)
+            self.test_acc.reset()  # ✅ Reset test_acc to avoid cumulative results
         else:  # 单任务预测
             preds = batch_parts["preds"]
             targets = batch_parts["targets"]
             self.test_acc(preds, targets)
             self.log("test.acc", self.test_acc, on_step=False, on_epoch=True)
+            self.test_acc.reset()  # ✅ Reset test_acc after logging
 
             # 计算单任务的每个类别的准确率
             unique_labels = torch.unique(targets)
