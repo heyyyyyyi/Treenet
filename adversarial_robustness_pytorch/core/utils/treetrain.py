@@ -93,6 +93,9 @@ class TreeEnsemble(object):
                 if outputs is None or len(outputs) < 2:
                     raise ValueError("Model did not return expected outputs (root_logits, subroot_logits).")
                 return outputs[1]  # Ensure subroot_logits is returned
+                
+            def __call__(self, x):
+                return self.forward(x)
         
         wrapper_model = wrapper(model)
         criterion = nn.CrossEntropyLoss()
