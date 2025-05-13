@@ -44,6 +44,7 @@ class TreeClassifier(pl.LightningModule):
 
         self.train_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
         self.val_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+        self.root_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
 
         if test_keys is None:
             self.test_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
@@ -58,19 +59,40 @@ class TreeClassifier(pl.LightningModule):
         self.alpha_update_strategy = alpha_update_strategy or {
             "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
         }
+        self.root_loss = 0.0
 
-    def update_alphas(self, current_epoch: int):
+    def update_alphas(self, current_epoch: int, root_acc: float):
         """
-        Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
+        Dynamically update alpha1, alpha2, and alpha3 based on the current epoch and root loss.
         """
-        progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
-        self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
-        alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
+        if current_epoch < 10:
+            return 
+        if current_epoch >= self.max_epochs * 0.8:
+            progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
+            self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
+            
+        else:
+            if not isinstance(root_acc, torch.Tensor):
+                root_acc = torch.tensor(root_acc, device=self.device)
 
-        # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+            # 基础参数
+            min_alpha1 = 0.1
+            max_alpha1 = 0.9
+            threshold = 0.75  # 当 root acc 达到此值时，alpha1 接近 min_alpha1
+            sharpness = 20.0   # sigmoid 曲线的斜率
+
+            # 平滑下降的 sigmoid 曲线（alpha1 在 max_alpha1 到 min_alpha1 之间变化）
+            sig = torch.sigmoid(sharpness * (threshold - root_acc))
+            self.alpha1 = min_alpha1 + (max_alpha1 - min_alpha1) * sig
+
+        # 剩余权重分给 alpha2 和 alpha3
+        alpha23_total = 1.0 - self.alpha1
         balance_ratio = self.alpha_update_strategy["balance_ratio"]
         self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
         self.alpha3 = alpha23_total / (1 + balance_ratio)
+            
+
+            
 
     def forward(self, x):
         root_logits, subroot_logits = self.model(x)
@@ -96,6 +118,7 @@ class TreeClassifier(pl.LightningModule):
         preds = torch.argmax(subroot_logits, 1)
 
         root_loss = F.cross_entropy(root_logits, y)
+        self.root_loss = root_loss.item()
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -120,10 +143,12 @@ class TreeClassifier(pl.LightningModule):
         """
         Hook to update alphas at the start of each training epoch.
         """
-        self.update_alphas(self.current_epoch)
+        self.update_alphas(self.current_epoch, self.root_acc)
         self.log("alpha1", self.alpha1, on_epoch=True)
         self.log("alpha2", self.alpha2, on_epoch=True)
         self.log("alpha3", self.alpha3, on_epoch=True)
+        self.log("root_loss", self.root_loss, on_epoch=True)
+        
     
     def training_step_end(self, batch_parts):
         preds = batch_parts["preds"]
@@ -139,16 +164,20 @@ class TreeClassifier(pl.LightningModule):
     
     def validation_step(self, batch, batch_idx, dataloader_idx=None):
         x, y = batch
-        _, logits = self(x)
-        preds = torch.argmax(logits, 1)
-        return {"preds": preds, "targets": y}
+        root_logits, subroot_logits = self(x)
+        preds = torch.argmax(subroot_logits, 1)
+        root_preds = torch.argmax(root_logits, 1)
+        return {"preds": preds, "root_preds": root_preds, "targets": y}
     
     def validation_step_end(self, batch_parts):
         preds=batch_parts["preds"]
+        root_preds=batch_parts["root_preds"]
         targets=batch_parts["targets"]
 
         self.val_acc(preds, targets)
+        self.root_acc(root_preds, targets)
         self.log("val.acc", self.val_acc, on_step=False, on_epoch=True)
+        self.log("root_acc", self.root_acc, on_step=False, on_epoch=True)
          
     def test_step(self, batch, batch_idx, dataloader_idx=None):
         if isinstance(batch, dict):
