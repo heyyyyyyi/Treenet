@@ -156,6 +156,9 @@ class TreeEnsemble(object):
             self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
             self.alpha3 = alpha23_total / (1 + balance_ratio)
 
+        # Log updated alphas
+        #print(f"Updated alphas: alpha1={self.alpha1}, alpha2={self.alpha2}, alpha3={self.alpha3}")
+
     def forward(self, x):
         root_logits, subroot_logits = self.model(x)
         return root_logits, subroot_logits
@@ -327,6 +330,7 @@ class TreeEnsemble(object):
         Evaluate performance of the model.
         """
         acc = 0.0
+        root_acc = 0.0
         self.model.eval()
         
         for x, y in dataloader:
@@ -334,12 +338,15 @@ class TreeEnsemble(object):
             if adversarial:
                 with ctx_noparamgrad_and_eval(self.model):
                     x_adv, _ = self.eval_attack.perturb(x, y)            
-                _, out = self.model(x_adv)
+                root_out, out = self.model(x_adv)
             else:
-                _, out = self.model(x)
+                root_out, out = self.model(x)
             acc += accuracy(y, out)
+            root_acc += accuracy(y, root_out)
         acc /= len(dataloader)
-        return acc
+        root_acc /= len(dataloader)
+
+        return dict(test_acc=acc, root_acc=root_acc)
     
     def save_model(self, path):
         """

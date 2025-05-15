@@ -98,7 +98,10 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         last_lr = trainer.scheduler.get_last_lr()[0]
     
     res = trainer.train(train_dataloader, epoch=epoch, adversarial=True)
-    test_acc = trainer.eval(test_dataloader)
+    test_res = trainer.eval(test_dataloader)
+    test_acc = test_res['acc']
+    root_acc = test_res['root_acc']
+    alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, root_acc)
 
     logger.log('Loss: {:.4f}.\tLR: {:.4f}'.format(res['loss'], last_lr))
     if 'clean_acc' in res:
@@ -116,6 +119,10 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     else:
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
     
+    # log alpha1, alpha2, alpha3
+    logger.log('Alpha1: {:.4f}.\tAlpha2: {:.4f}.\tAlpha3: {:.4f}'.format(alpha1, alpha2, alpha3))
+    epoch_metrics.update({'alpha1': alpha1, 'alpha2': alpha2, 'alpha3': alpha3})
+
     if test_adv_acc >= old_score[1]:
         old_score[0], old_score[1] = test_acc, test_adv_acc
         trainer.save_model(WEIGHTS)

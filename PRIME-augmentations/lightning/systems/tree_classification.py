@@ -30,8 +30,8 @@ class TreeClassifier(pl.LightningModule):
         scheduler_t: str = "cyclic",
         test_keys=None,
         alpha1: float = 0.9,
-        alpha2: float = 0.1,
-        alpha3: float = 0.1,
+        alpha2: float = 0.06,
+        alpha3: float = 0.04,
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,  # Strategy for alpha adjustment
     ):
@@ -57,7 +57,7 @@ class TreeClassifier(pl.LightningModule):
 
         self.max_epochs = max_epochs
         self.alpha_update_strategy = alpha_update_strategy or {
-            "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
+            "balance_ratio": 3 / 2,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
         }
         self.root_acc = 0.0
 
@@ -91,9 +91,7 @@ class TreeClassifier(pl.LightningModule):
         self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
         self.alpha3 = alpha23_total / (1 + balance_ratio)
 
-        self.log("alpha1_updated", self.alpha1, on_epoch=True)  # ✅ Log updated alpha1
-        self.log("alpha2_updated", self.alpha2, on_epoch=True)  # ✅ Log updated alpha2
-        self.log("alpha3_updated", self.alpha3, on_epoch=True)  # ✅ Log updated alpha3
+        return self.alpha1, self.alpha2, self.alpha3
         
     def forward(self, x):
         root_logits, subroot_logits = self.model(x)
@@ -181,9 +179,8 @@ class TreeClassifier(pl.LightningModule):
 
     def validation_epoch_end(self, outputs):
         root_acc = self.val_root_acc.compute().item()  # ✅ get value
+        #print(root_acc)
         self.update_alphas(self.current_epoch, root_acc)  # ✅ 动态调整
-        self.val_root_acc.reset()  # ✅ 重置，避免累计
-        self.val_acc.reset()  # ✅ Reset val_acc to avoid cumulative results
          
     def test_step(self, batch, batch_idx, dataloader_idx=None):
         if isinstance(batch, dict):

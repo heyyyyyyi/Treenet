@@ -246,7 +246,7 @@ def main(_):
         del model.model.aug
 
     
-    # Evaluation on common corruptions
+    #Evaluation on common corruptions
     # dataset_c = get_cc_dataset(config.dataset)(
     #     config.cc_dir, batch_size=config.test_batch_size,
     #     num_workers=config.test_num_workers
