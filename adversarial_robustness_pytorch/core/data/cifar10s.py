@@ -11,7 +11,7 @@ from .semisup import SemiSupervisedSampler
 
 
 def load_cifar10s(data_dir, use_augmentation=False, aux_take_amount=None, 
-                  aux_data_filename='/root/Treenet/adversarial_robustness_pytorch/data/ti_500K_pseudo_labeled.pickle', 
+                  aux_data_filename='./data/ti_500K_pseudo_labeled.pickle', 
                   validation=False):
     """
     Returns semisupervised CIFAR10 train, test datasets and dataloaders (with Tiny Images).

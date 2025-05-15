@@ -11,7 +11,7 @@ import torch.nn as nn
 from .rst import CosineLR
 
 from core.attacks import create_attack
-from core.metrics import accuracy
+from core.metrics import accuracy, binary_accuracy
 from core.models import create_model
 
 from core.models.treeresnet import lighttreeresnet
@@ -20,17 +20,6 @@ from .context import ctx_noparamgrad_and_eval
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def torch_isin(elements: torch.Tensor, test_elements: torch.Tensor) -> torch.Tensor:
-    """
-    Replacement for torch.isin for PyTorch < 1.10
-    """
-    test_elements = test_elements.to(elements.device)
-
-    elements_shape = elements.shape
-    elements_flat = elements.flatten()
-    test_elements_flat = test_elements.flatten()
-    result = (elements_flat[..., None] == test_elements_flat).any(-1)
-    return result.reshape(elements_shape)
 
 class TreeEnsemble(object):
     def __init__(self, 
@@ -235,8 +224,8 @@ class TreeEnsemble(object):
         animal_classes_index = torch.tensor(animal_classes, device=y.device)
         vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
 
-        is_animal = torch_isin(y, animal_classes_index)
-        is_vehicle = torch_isin(y, vehicle_classes_index)
+        is_animal = torch.isin(y, animal_classes_index)
+        is_vehicle = torch.isin(y, vehicle_classes_index)
 
         if is_animal.any():
             subroot_loss_animal = self.animal_trainer.criterion(subroot_logits[is_animal], y[is_animal])
@@ -303,8 +292,8 @@ class TreeEnsemble(object):
         animal_classes_index = torch.tensor(animal_classes, device=y.device)
         vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
 
-        is_animal = torch_isin(y, animal_classes_index)
-        is_vehicle = torch_isin(y, vehicle_classes_index)
+        is_animal = torch.isin(y, animal_classes_index)
+        is_vehicle = torch.isin(y, vehicle_classes_index)
 
         if is_animal.any():
             subroot_loss_animal, _ = self.animal_trainer.trades_loss(subroot_logits[is_animal], y[is_animal], beta)
@@ -332,8 +321,8 @@ class TreeEnsemble(object):
         animal_classes_index = torch.tensor(animal_classes, device=y.device)
         vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
 
-        is_animal = torch_isin(y, animal_classes_index)
-        is_vehicle = torch_isin(y, vehicle_classes_index)
+        is_animal = torch.isin(y, animal_classes_index)
+        is_vehicle = torch.isin(y, vehicle_classes_index)
 
         if is_animal.any():
             subroot_loss_animal, _ = self.animal_trainer.mart_loss(subroot_logits[is_animal], y[is_animal], beta)
@@ -351,6 +340,7 @@ class TreeEnsemble(object):
         """
         acc = 0.0
         root_acc = 0.0
+        root_acc_bi = 0.0
         self.model.eval()
         
         for x, y in dataloader:
@@ -362,11 +352,16 @@ class TreeEnsemble(object):
             else:
                 root_out, out = self.model(x)
             acc += accuracy(y, out)
+            # 10 classes
             root_acc += accuracy(y, root_out)
+            # 2 classes based on animal_classes(1) or vehicle_classes(0)
+            root_acc_bi += binary_accuracy(y, root_out)
+
         acc /= len(dataloader)
         root_acc /= len(dataloader)
+        root_acc_bi /= len(dataloader)
 
-        return dict(acc=acc, root_acc=root_acc)
+        return dict(acc=acc, root_acc=root_acc, root_acc_bi=root_acc_bi)
     
     def save_model(self, path):
         """

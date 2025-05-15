@@ -18,8 +18,8 @@ def parser_train():
     parser.add_argument('--batch-size', type=int, default=1024, help='Batch size for training.')
     parser.add_argument('--batch-size-validation', type=int, default=512, help='Batch size for testing.')
     
-    parser.add_argument('--data-dir', type=str, default='/root/Treenet/adversarial_robustness_pytorch/data/')
-    parser.add_argument('--log-dir', type=str, default='/root/Treenet/adversarial_robustness_pytorch/test/')
+    parser.add_argument('--data-dir', type=str, default='./data/')
+    parser.add_argument('--log-dir', type=str, default='./test/')
     
     parser.add_argument('-d', '--data', type=str, default='cifar10s', choices=DATASETS, help='Data to use.')
     parser.add_argument('--desc', type=str, required=True, 
@@ -52,7 +52,7 @@ def parser_train():
     
     parser.add_argument('--unsup-fraction', type=float, default=0.7, help='Ratio of unlabelled data to labelled data.')
     parser.add_argument('--aux-data-filename', type=str, help='Path to additional Tiny Images data.', 
-                        default='/root/Treenet/adversarial_robustness_pytorch/data/ti_500K_pseudo_labeled.pickle')
+                        default='./data/ti_500K_pseudo_labeled.pickle')
     
     parser.add_argument('--seed', type=int, default=1, help='Random seed.')
     return parser

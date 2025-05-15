@@ -95,3 +95,5 @@ If you use this code in your research, please cite the original works [[Paper](h
 - pip install torch==1.8.0+cu101 torchvision==0.9.0+cu101 -f https://download.pytorch.org/whl/torch_stable.html (too old not support ada4)
 
 - download data from google https://drive.google.com/file/d/1LTw3Sb5QoiCCN-6Y5PEKkq9C9W60w-Hi/view
+
+gdown https://drive.google.com/uc?id=1LTw3Sb5QoiCCN-6Y5PEKkq9C9W60w-Hi

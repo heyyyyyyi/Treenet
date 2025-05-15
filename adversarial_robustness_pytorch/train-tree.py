@@ -108,6 +108,8 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     test_res = trainer.eval(test_dataloader)
     test_acc = test_res['acc']
     root_acc = test_res['root_acc']
+    root_acc_bi = test_res['root_acc_bi']
+
     alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, root_acc)
 
     logger.log('Loss: {:.4f}.\tLR: {:.4f}'.format(res['loss'], last_lr))
@@ -116,16 +118,19 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     else:
         logger.log('Standard Accuracy-\tTest: {:.2f}%.'.format(test_acc*100))
     epoch_metrics = {'train_'+k: v for k, v in res.items()}
-    epoch_metrics.update({'epoch': epoch, 'lr': last_lr, 'test_clean_acc': test_acc, 'test_clean_root_acc': root_acc, 'test_adversarial_acc': '', 'test_adversarial_root_acc': ''})
+    epoch_metrics.update({'epoch': epoch, 'lr': last_lr, 'test_clean_acc': test_acc, 'test_clean_root_acc': root_acc, 'test_clean_root_acc_bi': root_acc_bi,  'test_adversarial_acc': '', 'test_adversarial_root_acc': '', 'test_adversarial_root_acc_bi': ''})
     
     if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
         test_adv_res = trainer.eval(test_dataloader, adversarial=True)
         test_adv_acc = test_adv_res['acc']
         test_adv_root_acc = test_adv_res['root_acc']
+        test_adv_root_acc_bi = test_adv_res['root_acc_bi']
+
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
                                                                                    test_adv_acc*100))
         epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
         epoch_metrics.update({'test_adversarial_root_acc': test_adv_root_acc})
+        epoch_metrics.update({'test_adversarial_root_acc_bi': test_adv_root_acc_bi})
     else:
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
     
