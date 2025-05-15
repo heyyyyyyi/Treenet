@@ -19,12 +19,14 @@ from .mart import mart_loss
 from .rst import CosineLR
 from .trades import trades_loss
 
+from .treetrain import TreeClassifier
+
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 SCHEDULERS = ['cyclic', 'step', 'cosine', 'cosinew']
 
-
+# Add one more wrapper for tree model 
 class Trainer(object):
     """
     Helper class for training a deep neural network.

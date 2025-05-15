@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
+from core import animal_classes, vehicle_classes
 from .. import utils
 
 from core import animal_classes, vehicle_classes
@@ -118,6 +119,21 @@ class TreeResNet(nn.Module):
             return root_logits, subroot_logits
 
     
+class TreeResNet34(TreeResNet): # 【3，4，6，3】 resnet34， 【3，4，3】 treeresnet34 +【3】；
+    def __init__(self, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
+        super(TreeResNet34, self).__init__( 
+            BasicBlock, [3, 4, 3],[3,3], 
+            num_channels=num_channels, num_classes=num_classes,
+            linear_bias=linear_bias, bn_affine=bn_affine
+        )
+
+class TreeResNet18(TreeResNet): # 【2, 2, 2, 2】 resnet18, 【2, 2, 1】 treeresnet18 +【1】；
+    def __init__(self, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
+        super(TreeResNet18, self).__init__( 
+            BasicBlock, [2,2,1], [1,1],
+            num_channels=num_channels, num_classes=num_classes,
+            linear_bias=linear_bias, bn_affine=bn_affine
+        )
 #def resnet34(num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
 
 # ---------------------------light resnet--------------------------------
@@ -225,6 +241,14 @@ class LightTreeResNet(nn.Module):
             
         return root_logits, subroot_logits
 
+def LightTreeResNet20(name, num_classes=10, pretrained=False, device='cpu'):
+    if name == 'lighttreeresnet20':
+       return LightTreeResNet(BasicBlock, [2, 1], [1, 1], 
+            num_classes=num_classes,
+            device=device)
+    raise ValueError('Only resnet18, resnet34, resnet50 and resnet101 are supported!')
+    return
+
 def lighttreeresnet(name, num_classes=10, pretrained=False, device='cpu'):
     """
     Returns suitable Light Resnet model from its name.
@@ -245,3 +269,5 @@ def lighttreeresnet(name, num_classes=10, pretrained=False, device='cpu'):
         )
     
     raise ValueError('Only lighttreeresnet20 is supported!')
+    return   
+
