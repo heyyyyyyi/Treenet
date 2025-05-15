@@ -23,6 +23,10 @@ from core.utils import parser_train
 from core.utils import Trainer
 from core.utils import seed
 
+import wandb
+
+_WANDB_USERNAME = "yhe106-johns-hopkins-university"
+_WANDB_PROJECT = "ADV-light20"
 
 
 # Setup
@@ -30,6 +34,11 @@ from core.utils import seed
 parse = parser_train()
 args = parse.parse_args()
 
+wandb.init(
+    project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
+    name=args.desc,  # 以你的描述作为 run 的名字
+    #config=args,     # 自动记录所有超参数
+)
 
 DATA_DIR = os.path.join(args.data_dir, args.data)
 LOG_DIR = os.path.join(args.log_dir, args.desc)
@@ -118,8 +127,10 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     trainer.save_model(os.path.join(LOG_DIR, 'weights-last.pt'))
 
     logger.log('Time taken: {}'.format(format_time(time.time()-start)))
-    metrics = metrics.append(pd.DataFrame(epoch_metrics, index=[0]), ignore_index=True)
+    #metrics = metrics.append(pd.DataFrame(epoch_metrics, index=[0]), ignore_index=True)
+    metrics = pd.concat([metrics, pd.DataFrame(epoch_metrics, index=[0])], ignore_index=True)
     metrics.to_csv(os.path.join(LOG_DIR, 'stats_adv.csv'), index=False)
+    wandb.log(epoch_metrics)
 
     
     
@@ -132,3 +143,9 @@ if NUM_ADV_EPOCHS > 0:
     logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, old_score[1]*100)) 
 
 logger.log('Script Completed.')
+
+wandb.summary["final_train_acc"] = train_acc
+wandb.summary["final_test_clean_acc"] = old_score[0]
+wandb.summary["final_test_adv_acc"] = old_score[1]
+
+wandb.finish()
