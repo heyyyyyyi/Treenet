@@ -20,7 +20,6 @@ def torch_isin(elements: torch.Tensor, test_elements: torch.Tensor) -> torch.Ten
     result = (elements_flat[..., None] == test_elements_flat).any(-1)
     return result.reshape(elements_shape)
 
-
 class TreeClassifier(pl.LightningModule):
     def __init__(
         self,
@@ -59,59 +58,33 @@ class TreeClassifier(pl.LightningModule):
 
         self.max_epochs = max_epochs
         self.alpha_update_strategy = alpha_update_strategy or {
-            "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
+            "balance_ratio": 3 / 2,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
         }
-        self.root_loss = 0.0
 
-    def update_alphas(self, root_acc, current_epoch):
-        # """
-        # Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
-        # """
-        # progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
-        # self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
-        # alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
 
-        # # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
-        # balance_ratio = self.alpha_update_strategy["balance_ratio"]
-        # self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-        # self.alpha3 = alpha23_total / (1 + balance_ratio)
+
+    def update_alphas(self, current_epoch: int, root_acc: float):
         """
-        Dynamically update alpha1, alpha2, and alpha3 based on the root acc.
+        Update alpha1, alpha2, alpha3 dynamically based on epoch and root accuracy.
+        This ensures: alpha1 dominates early, then reduces over time, adjusted by root acc.
+
+        alpha1 : 0.9 -> 0.5 -> 0.1 
         """
-        if 15 < current_epoch < 80:
+    
+        if current_epoch < self.max_epochs * 0.15 and root_acc < 0.65:
+            self.alpha1 = 0.9
+        elif current_epoch > self.max_epochs * 0.7:
+            self.alpha1 = 0.1
+        else:
+            self.alpha1 = 0.5
 
-            if not isinstance(root_acc, torch.Tensor):
-                root_acc = torch.tensor(root_acc, device=self.device)
+        balance_ratio = self.alpha_update_strategy["balance_ratio"]
 
-            # # Sigmoid-based smoothing for alpha1
-            # threshold = 0.65  # Reference point for root accuracy
-            # sharpness = 10.0  # Controls the steepness of the sigmoid curve
-            # self.alpha1 = 0.9 / (1 + torch.exp(-sharpness * (threshold - root_acc)))  # Smoothly decrease alpha1
+        # Remaining portion goes to alpha2 and alpha3
+        alpha23_total = 1.0 - self.alpha1
+        self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+        self.alpha3 = alpha23_total / (1 + balance_ratio)
 
-            threshold = 0.65
-            sharpness = 14.0
-            min_alpha1, max_alpha1 = 0.01, 0.9
-
-            sig = torch.sigmoid(sharpness * (threshold - root_acc))
-            self.alpha1 = min_alpha1 + (max_alpha1 - min_alpha1) * sig
-
-            # Remaining weight for alpha2 and alpha3
-            alpha23_total = 1.0 - self.alpha1
-
-            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
-            balance_ratio = self.alpha_update_strategy["balance_ratio"]
-            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-            self.alpha3 = alpha23_total / (1 + balance_ratio)
-
-        elif current_epoch >= 80:
-            progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
-            self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
-            alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
-
-            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
-            balance_ratio = self.alpha_update_strategy["balance_ratio"]
-            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-            self.alpha3 = alpha23_total / (1 + balance_ratio)
 
     def forward(self, x):
         root_logits, subroot_logits = self.model(x)
@@ -137,7 +110,6 @@ class TreeClassifier(pl.LightningModule):
         preds = torch.argmax(subroot_logits, 1)
 
         root_loss = F.cross_entropy(root_logits, y)
-        self.root_loss = root_loss.item()
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -168,7 +140,7 @@ class TreeClassifier(pl.LightningModule):
         self.log("alpha1", self.alpha1, on_epoch=True)
         self.log("alpha2", self.alpha2, on_epoch=True)
         self.log("alpha3", self.alpha3, on_epoch=True)
-        self.log("root_loss", self.root_loss, on_epoch=True)
+        #self.log("root_loss", self.root_loss, on_epoch=True)
         
     
     def training_step_end(self, batch_parts):

@@ -21,8 +21,14 @@ from core.utils import format_time
 from core.utils import Logger
 from core.utils import parser_train
 from core.utils import Trainer
+from core.utils import TreeEnsemble
 from core.utils import seed
+# use wandb for logging
 
+import wandb
+
+_WANDB_USERNAME = "yhe106-johns-hopkins-university"
+_WANDB_PROJECT = "ADV-light20"
 
 
 # Setup
@@ -30,6 +36,11 @@ from core.utils import seed
 parse = parser_train()
 args = parse.parse_args()
 
+wandb.init(
+    project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
+    name=args.desc,  # 以你的描述作为 run 的名字
+    config=args,     # 自动记录所有超参数
+)
 
 DATA_DIR = os.path.join(args.data_dir, args.data)
 LOG_DIR = os.path.join(args.log_dir, args.desc)
@@ -71,7 +82,10 @@ del train_dataset, test_dataset
 # Adversarial Training (AT, TRADES and MART)
 
 seed(args.seed)
-trainer = Trainer(info, args)
+if "tree" in args.model:
+    trainer = TreeEnsemble(info, args)
+else:
+    trainer = Trainer(info, args)
 last_lr = args.lr
 
 
@@ -122,6 +136,7 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     metrics = pd.concat([metrics, pd.DataFrame(epoch_metrics, index=[0])], ignore_index=True)
 
     metrics.to_csv(os.path.join(LOG_DIR, 'stats_adv.csv'), index=False)
+    wandb.log(epoch_metrics)
 
     
     
@@ -134,3 +149,9 @@ if NUM_ADV_EPOCHS > 0:
     logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, old_score[1]*100)) 
 
 logger.log('Script Completed.')
+
+wandb.summary["final_train_acc"] = train_acc
+wandb.summary["final_test_clean_acc"] = old_score[0]
+wandb.summary["final_test_adv_acc"] = old_score[1]
+
+wandb.finish()
