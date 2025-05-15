@@ -139,7 +139,7 @@ class TreeEnsemble(object):
         else:
             self.scheduler = None
 
-    def update_alphas(self, current_epoch: int):
+    def update_alphas(self, current_epoch: int, root_acc: float):
         """
         Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
         """
@@ -155,7 +155,7 @@ class TreeEnsemble(object):
             balance_ratio = self.alpha_update_strategy["balance_ratio"]
             self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
             self.alpha3 = alpha23_total / (1 + balance_ratio)
-
+        return self.alpha1, self.alpha2, self.alpha3
         # Log updated alphas
         #print(f"Updated alphas: alpha1={self.alpha1}, alpha2={self.alpha2}, alpha3={self.alpha3}")
 
@@ -167,8 +167,6 @@ class TreeEnsemble(object):
         """
         Train each trainer on a given (sub)set of data.
         """
-        # update alpha every epoch 
-        self.update_alphas(epoch)
         
         metrics = pd.DataFrame()  # Initialize metrics
         for data in tqdm(dataloader, desc='Epoch {}: '.format(epoch), disable=not verbose):
@@ -346,7 +344,7 @@ class TreeEnsemble(object):
         acc /= len(dataloader)
         root_acc /= len(dataloader)
 
-        return dict(test_acc=acc, root_acc=root_acc)
+        return dict(acc=acc, root_acc=root_acc)
     
     def save_model(self, path):
         """

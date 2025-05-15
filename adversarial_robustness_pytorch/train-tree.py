@@ -1,5 +1,5 @@
 """
-Adversarial Training.
+Adversarial Training. (Tree)
 """
 
 import json
@@ -21,8 +21,14 @@ from core.utils import format_time
 from core.utils import Logger
 from core.utils import parser_train
 from core.utils import Trainer
+from core.utils import TreeEnsemble
 from core.utils import seed
+# use wandb for logging
 
+import wandb
+
+_WANDB_USERNAME = "yhe106-johns-hopkins-university"
+_WANDB_PROJECT = "ADV-light20"
 
 
 # Setup
@@ -30,6 +36,11 @@ from core.utils import seed
 parse = parser_train()
 args = parse.parse_args()
 
+wandb.init(
+    project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
+    name=args.desc,  # 以你的描述作为 run 的名字
+    #config=args,     # 自动记录所有超参数
+)
 
 DATA_DIR = os.path.join(args.data_dir, args.data)
 LOG_DIR = os.path.join(args.log_dir, args.desc)
@@ -71,14 +82,14 @@ del train_dataset, test_dataset
 # Adversarial Training (AT, TRADES and MART)
 
 seed(args.seed)
-trainer = Trainer(info, args)
+trainer = TreeEnsemble(info, args)
 last_lr = args.lr
 
 
 if NUM_ADV_EPOCHS > 0:
     logger.log('\n\n')
     metrics = pd.DataFrame()
-    logger.log('Standard Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader)*100))
+    logger.log('Standard Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader)['acc']*100))
     
     old_score = [0.0, 0.0]
     logger.log('Adversarial training for {} epochs'.format(NUM_ADV_EPOCHS))
@@ -94,7 +105,10 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         last_lr = trainer.scheduler.get_last_lr()[0]
     
     res = trainer.train(train_dataloader, epoch=epoch, adversarial=True)
-    test_acc = trainer.eval(test_dataloader)
+    test_res = trainer.eval(test_dataloader)
+    test_acc = test_res['acc']
+    root_acc = test_res['root_acc']
+    alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, root_acc)
 
     logger.log('Loss: {:.4f}.\tLR: {:.4f}'.format(res['loss'], last_lr))
     if 'clean_acc' in res:
@@ -102,33 +116,49 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     else:
         logger.log('Standard Accuracy-\tTest: {:.2f}%.'.format(test_acc*100))
     epoch_metrics = {'train_'+k: v for k, v in res.items()}
-    epoch_metrics.update({'epoch': epoch, 'lr': last_lr, 'test_clean_acc': test_acc, 'test_adversarial_acc': ''})
+    epoch_metrics.update({'epoch': epoch, 'lr': last_lr, 'test_clean_acc': test_acc, 'test_clean_root_acc': root_acc, 'test_adversarial_acc': '', 'test_adversarial_root_acc': ''})
     
     if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
-        test_adv_acc = trainer.eval(test_dataloader, adversarial=True)
+        test_adv_res = trainer.eval(test_dataloader, adversarial=True)
+        test_adv_acc = test_adv_res['acc']
+        test_adv_root_acc = test_adv_res['root_acc']
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
                                                                                    test_adv_acc*100))
         epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
+        epoch_metrics.update({'test_adversarial_root_acc': test_adv_root_acc})
     else:
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
     
+    # log alpha1, alpha2, alpha3
+    logger.log('Alpha1: {:.4f}.\tAlpha2: {:.4f}.\tAlpha3: {:.4f}'.format(alpha1, alpha2, alpha3))
+    epoch_metrics.update({'alpha1': alpha1, 'alpha2': alpha2, 'alpha3': alpha3})
+
     if test_adv_acc >= old_score[1]:
         old_score[0], old_score[1] = test_acc, test_adv_acc
         trainer.save_model(WEIGHTS)
     trainer.save_model(os.path.join(LOG_DIR, 'weights-last.pt'))
 
     logger.log('Time taken: {}'.format(format_time(time.time()-start)))
-    metrics = metrics.append(pd.DataFrame(epoch_metrics, index=[0]), ignore_index=True)
+    #metrics = metrics.append(pd.DataFrame(epoch_metrics, index=[0]), ignore_index=True)
+    metrics = pd.concat([metrics, pd.DataFrame(epoch_metrics, index=[0])], ignore_index=True)
+
     metrics.to_csv(os.path.join(LOG_DIR, 'stats_adv.csv'), index=False)
+    wandb.log(epoch_metrics)
 
     
     
 # Record metrics
 
-train_acc = res['clean_acc'] if 'clean_acc' in res else trainer.eval(train_dataloader)
+train_acc = res['clean_acc'] if 'clean_acc' in res else trainer.eval(train_dataloader)['acc']
 logger.log('\nTraining completed.')
 logger.log('Standard Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(train_acc*100, old_score[0]*100))
 if NUM_ADV_EPOCHS > 0:
     logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, old_score[1]*100)) 
 
 logger.log('Script Completed.')
+
+wandb.summary["final_train_acc"] = train_acc
+wandb.summary["final_test_clean_acc"] = old_score[0]
+wandb.summary["final_test_adv_acc"] = old_score[1]
+
+wandb.finish()
