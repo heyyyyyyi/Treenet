@@ -20,7 +20,8 @@ from core.data import load_data
 from core.utils import format_time
 from core.utils import Logger
 from core.utils import parser_train
-from core.utils import Trainer
+
+#from core.utils import Trainer
 from core.utils import TreeEnsemble
 from core.utils import seed
 # use wandb for logging
@@ -101,6 +102,11 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     start = time.time()
     logger.log('======= Epoch {} ======='.format(epoch))
     
+    # 提取学习率
+    root_lr = trainer.optimizer.param_groups[0]['lr']
+    subroot_animal_lr = trainer.optimizer.param_groups[1]['lr']
+    subroot_vehicle_lr = trainer.optimizer.param_groups[2]['lr']
+
     if args.scheduler:
         last_lr = trainer.scheduler.get_last_lr()[0]
     
@@ -109,28 +115,65 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     test_acc = test_res['acc']
     root_acc = test_res['root_acc']
     root_acc_bi = test_res['root_acc_bi']
+    acc_animal = test_res['acc_animal']
+    acc_vehicle = test_res['acc_vehicle']
+    root_acc_animal = test_res['root_acc_animal']
+    root_acc_vehicle = test_res['root_acc_vehicle']
 
     alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, root_acc)
 
-    logger.log('Loss: {:.4f}.\tLR: {:.4f}'.format(res['loss'], last_lr))
+    logger.log('Loss: {:.4f}.\tRoot LR: {:.6f}.\tSubroot Animal LR: {:.6f}.\tSubroot Vehicle LR: {:.6f}'.format(
+        res['loss'], root_lr, subroot_animal_lr, subroot_vehicle_lr
+    ))
+    
     if 'clean_acc' in res:
         logger.log('Standard Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['clean_acc']*100, test_acc*100))
     else:
         logger.log('Standard Accuracy-\tTest: {:.2f}%.'.format(test_acc*100))
+    
+    
     epoch_metrics = {'train_'+k: v for k, v in res.items()}
-    epoch_metrics.update({'epoch': epoch, 'lr': last_lr, 'test_clean_acc': test_acc, 'test_clean_root_acc': root_acc, 'test_clean_root_acc_bi': root_acc_bi,  'test_adversarial_acc': '', 'test_adversarial_root_acc': '', 'test_adversarial_root_acc_bi': ''})
+    epoch_metrics.update({
+        'epoch': epoch,
+        'lr_root': root_lr,
+        'lr_subroot_animal': subroot_animal_lr,
+        'lr_subroot_vehicle': subroot_vehicle_lr,
+        'test_clean_acc': test_acc,
+        'test_clean_root_acc': root_acc,
+        'test_clean_root_acc_bi': root_acc_bi,
+        'test_clean_acc_animal': acc_animal,
+        'test_clean_acc_vehicle': acc_vehicle,
+        'test_clean_root_acc_animal': root_acc_animal,
+        'test_clean_root_acc_vehicle': root_acc_vehicle,
+        'test_adversarial_acc': '',
+        'test_adversarial_root_acc': '',
+        'test_adversarial_root_acc_bi': '',
+        'test_adversarial_acc_animal': '',
+        'test_adversarial_acc_vehicle': '',
+        'test_adversarial_root_acc_animal': '',
+        'test_adversarial_root_acc_vehicle': '',
+    })
     
     if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
         test_adv_res = trainer.eval(test_dataloader, adversarial=True)
         test_adv_acc = test_adv_res['acc']
         test_adv_root_acc = test_adv_res['root_acc']
         test_adv_root_acc_bi = test_adv_res['root_acc_bi']
+        test_adv_acc_animal = test_adv_res['acc_animal']
+        test_adv_acc_vehicle = test_adv_res['acc_vehicle']
+        test_adv_root_acc_animal = test_adv_res['root_acc_animal']
+        test_adv_root_acc_vehicle = test_adv_res['root_acc_vehicle']
 
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
                                                                                    test_adv_acc*100))
         epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
         epoch_metrics.update({'test_adversarial_root_acc': test_adv_root_acc})
         epoch_metrics.update({'test_adversarial_root_acc_bi': test_adv_root_acc_bi})
+        epoch_metrics.update({'test_adversarial_acc_animal': test_adv_acc_animal})
+        epoch_metrics.update({'test_adversarial_acc_vehicle': test_adv_acc_vehicle})
+        epoch_metrics.update({'test_adversarial_root_acc_animal': test_adv_root_acc_animal})
+        epoch_metrics.update({'test_adversarial_root_acc_vehicle': test_adv_root_acc_vehicle})
+
     else:
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
     

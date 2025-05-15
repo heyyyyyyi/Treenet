@@ -8,5 +8,6 @@
   - 10 - 4,6 model
  
 ## reference
-- data augumentation: https://github.com/amodas/PRIME-augmentations
+- data augumentation: https://github.com/amodas/PRIME-augmentations.git
 - data adversary robustness: https://github.com/imrahulr/adversarial_robustness_pytorch.git
+

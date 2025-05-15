@@ -11,8 +11,10 @@ import torch.nn as nn
 from .rst import CosineLR
 
 from core.attacks import create_attack
-from core.metrics import accuracy, binary_accuracy
+from core.metrics import accuracy, binary_accuracy, subclass_accuracy
 from core.models import create_model
+
+from core.models import Normalization
 
 from core.models.treeresnet import lighttreeresnet
 
@@ -99,10 +101,18 @@ class TreeEnsemble(object):
         
     def init_optimizer(self, num_epochs):
         """
-        Initialize optimizer and scheduler.
+        Initialize optimizer and scheduler with different learning rates for root and subroot models.
         """
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.params.lr, weight_decay=self.params.weight_decay, 
-                                         momentum=0.9, nesterov=self.params.nesterov)
+        self.optimizer = torch.optim.SGD([
+            {"params": self.model.root_model.parameters(), "lr": self.params.lr * 0.5},  # root: 学得稳定，稍小
+            {"params": self.model.subroot_animal.parameters(), "lr": self.params.lr},    # subroot-animal: 正常
+            {"params": self.model.subroot_vehicle.parameters(), "lr": self.params.lr * 1.5},  # vehicle 学得慢一点，可以提速
+        ],
+            weight_decay=self.params.weight_decay, 
+            momentum=0.9, 
+            nesterov=self.params.nesterov
+        )
+
         if num_epochs <= 0:
             return
         self.init_scheduler(num_epochs)
@@ -110,21 +120,32 @@ class TreeEnsemble(object):
         
     def init_scheduler(self, num_epochs):
         """
-        Initialize scheduler.
+        Initialize scheduler for different parameter groups.
         """
         if self.params.scheduler == 'cyclic':
             num_samples = 50000 if 'cifar10' in self.params.data else 73257
             num_samples = 100000 if 'tiny-imagenet' in self.params.data else num_samples
-            update_steps = int(np.floor(num_samples/self.params.batch_size) + 1)
-            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=self.params.lr, pct_start=0.25,
-                                                                 steps_per_epoch=update_steps, epochs=int(num_epochs))
+            update_steps = int(np.floor(num_samples / self.params.batch_size) + 1)
+            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                self.optimizer,
+                max_lr=[self.params.lr * 0.5, self.params.lr * 1.0, self.params.lr * 1.5],
+                pct_start=0.25,
+                steps_per_epoch=update_steps,
+                epochs=int(num_epochs),
+            )
         elif self.params.scheduler == 'step':
-            self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer, gamma=0.1, milestones=[100, 105])    
+            self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
+                self.optimizer, gamma=0.1, milestones=[100, 105]
+            )
         elif self.params.scheduler == 'cosine':
             self.scheduler = CosineLR(self.optimizer, max_lr=self.params.lr, epochs=int(num_epochs))
         elif self.params.scheduler == 'cosinew':
-            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=self.params.lr, pct_start=0.025, 
-                                                                 total_steps=int(num_epochs))
+            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                self.optimizer,
+                max_lr=[self.params.lr * 0.5, self.params.lr * 1.0, self.params.lr * 1.5],
+                pct_start=0.025,
+                total_steps=int(num_epochs),
+            )
         else:
             self.scheduler = None
 
@@ -338,9 +359,12 @@ class TreeEnsemble(object):
         """
         Evaluate performance of the model.
         """
-        acc = 0.0
-        root_acc = 0.0
+        acc, acc_animal, acc_vehicle = 0.0, 0.0, 0.0
+        root_acc, root_acc_animal, root_acc_vehicle = 0.0, 0.0, 0.0
         root_acc_bi = 0.0
+
+        animal_count, vehicle_count = 0, 0
+
         self.model.eval()
         
         for x, y in dataloader:
@@ -351,17 +375,41 @@ class TreeEnsemble(object):
                 root_out, out = self.model(x_adv)
             else:
                 root_out, out = self.model(x)
+
             acc += accuracy(y, out)
+            temp_acc_animal, temp_acc_vehicle = subclass_accuracy(y, out)
+            acc_animal += temp_acc_animal
+            acc_vehicle += temp_acc_vehicle
+
+            animal_count += torch.isin(y, torch.tensor(animal_classes, device=y.device)).sum().item()
+            vehicle_count += torch.isin(y, torch.tensor(vehicle_classes, device=y.device)).sum().item()
+
             # 10 classes
             root_acc += accuracy(y, root_out)
+            temp_root_acc_animal, temp_root_acc_vehicle = subclass_accuracy(y, root_out)
+            root_acc_animal += temp_root_acc_animal
+            root_acc_vehicle += temp_root_acc_vehicle
             # 2 classes based on animal_classes(1) or vehicle_classes(0)
             root_acc_bi += binary_accuracy(y, root_out)
 
         acc /= len(dataloader)
         root_acc /= len(dataloader)
         root_acc_bi /= len(dataloader)
+        
+        acc_animal = acc_animal / animal_count if animal_count > 0 else 0.0
+        acc_vehicle = acc_vehicle / vehicle_count if vehicle_count > 0 else 0.0
+        root_acc_animal = root_acc_animal / animal_count if animal_count > 0 else 0.0
+        root_acc_vehicle = root_acc_vehicle / vehicle_count if vehicle_count > 0 else 0.0
 
-        return dict(acc=acc, root_acc=root_acc, root_acc_bi=root_acc_bi)
+        return dict(
+            acc=acc,
+            acc_animal=acc_animal,
+            acc_vehicle=acc_vehicle,
+            root_acc=root_acc,
+            root_acc_animal=root_acc_animal,
+            root_acc_vehicle=root_acc_vehicle,
+            root_acc_bi=root_acc_bi
+        )
     
     def save_model(self, path):
         """

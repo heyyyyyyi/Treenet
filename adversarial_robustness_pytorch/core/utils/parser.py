@@ -35,6 +35,7 @@ def parser_train():
     parser.add_argument('--beta', default=None, type=float, help='Stability regularization, i.e., 1/lambda in TRADES.')
     
     parser.add_argument('--lr', type=float, default=0.4, help='Learning rate for optimizer (SGD).')
+
     parser.add_argument('--weight-decay', type=float, default=5e-4, help='Optimizer (SGD) weight decay.')
     parser.add_argument('--scheduler', choices=SCHEDULERS, default='cosinew', help='Type of scheduler.')
     parser.add_argument('--nesterov', type=str2bool, default=True, help='Use Nesterov momentum.')
