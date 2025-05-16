@@ -31,8 +31,6 @@ class TreeClassifier(pl.LightningModule):
         alpha1: float = 0.9,
         alpha2: float = 0.06,
         alpha3: float = 0.04,
-        alpha2: float = 0.06,
-        alpha3: float = 0.04,
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,  # Strategy for alpha adjustment
     ):
@@ -44,15 +42,22 @@ class TreeClassifier(pl.LightningModule):
         self.scheduler_t = scheduler_t
 
         self.train_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+
         self.val_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
         self.rootval_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+        self.val_animal_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+        self.val_vehicle_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
 
         self.latest_rootval_acc = 0.0  
 
         if test_keys is None:
             self.test_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+            self.test_animal_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+            self.test_vehicle_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
         else:
             self.test_acc = nn.ModuleDict({key: torchmetrics.Accuracy() for key in test_keys})
+            self.test_animal_acc = nn.ModuleDict({key: torchmetrics.Accuracy() for key in test_keys})
+            self.test_vehicle_acc = nn.ModuleDict({key: torchmetrics.Accuracy() for key in test_keys})
 
         self.alpha1 = alpha1
         self.alpha2 = alpha2
@@ -63,29 +68,46 @@ class TreeClassifier(pl.LightningModule):
             "balance_ratio": 3 / 2,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
         }
 
-
-
     def update_alphas(self, current_epoch: int, root_acc: float):
         """
-        Update alpha1, alpha2, alpha3 dynamically based on epoch and root accuracy.
-        This ensures: alpha1 dominates early, then reduces over time, adjusted by root acc.
-
-        alpha1 : 0.9 -> 0.5 -> 0.1 
+        Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
         """
-    
-        if current_epoch < self.max_epochs * 0.15 and root_acc < 0.65:
-            self.alpha1 = 0.9
-        elif current_epoch > self.max_epochs * 0.7:
-            self.alpha1 = 0.1
+        progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
+        self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
+        alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
+
+        # Use a custom strategy if provided
+        if callable(self.alpha_update_strategy):
+            self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
         else:
-            self.alpha1 = 0.5
+            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+            balance_ratio = self.alpha_update_strategy["balance_ratio"]
+            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+            self.alpha3 = alpha23_total / (1 + balance_ratio)
+        
 
-        balance_ratio = self.alpha_update_strategy["balance_ratio"]
 
-        # Remaining portion goes to alpha2 and alpha3
-        alpha23_total = 1.0 - self.alpha1
-        self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-        self.alpha3 = alpha23_total / (1 + balance_ratio)
+    # def update_alphas(self, current_epoch: int, root_acc: float):
+    #     """
+    #     Update alpha1, alpha2, alpha3 dynamically based on epoch and root accuracy.
+    #     This ensures: alpha1 dominates early, then reduces over time, adjusted by root acc.
+
+    #     alpha1 : 0.9 -> 0.5 -> 0.1 
+    #     """
+    
+    #     if current_epoch < self.max_epochs * 0.15 and root_acc < 0.75:
+    #         self.alpha1 = 0.9
+    #     elif current_epoch > self.max_epochs * 0.7:
+    #         self.alpha1 = 0.1
+    #     else:
+    #         self.alpha1 = 0.5
+
+    #     balance_ratio = self.alpha_update_strategy["balance_ratio"]
+
+    #     # Remaining portion goes to alpha2 and alpha3
+    #     alpha23_total = 1.0 - self.alpha1
+    #     self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+    #     self.alpha3 = alpha23_total / (1 + balance_ratio)
 
 
     def forward(self, x):
@@ -105,6 +127,55 @@ class TreeClassifier(pl.LightningModule):
                 "interval": "epoch",
             }
         return [optimizer], [scheduler]
+    
+    def configure_optimizers(self):
+        # 1. 多 param group 支持：分别设置 lr
+        #if self.model has attribute "root_model":
+        if hasattr(self.model, "root_model"):
+            root_params = self.model.root_model.parameters()
+            animal_params = self.model.subroot_animal.parameters()
+            vehicle_params = self.model.subroot_vehicle.parameters()
+        else:
+            root_params = self.model.model.root_model.parameters()
+            animal_params = self.model.model.subroot_animal.parameters()
+            vehicle_params = self.model.model.subroot_vehicle.parameters()
+        
+        optimizer = torch.optim.SGD([
+            {"params": root_params, "lr": self.optimizer_cfg.lr * 0.5},
+            {"params": animal_params, "lr": self.optimizer_cfg.lr * 1.0},
+            {"params": vehicle_params, "lr": self.optimizer_cfg.lr * 1.5},
+        ], 
+            momentum=self.optimizer_cfg.momentum,
+            weight_decay=self.optimizer_cfg.weight_decay,
+            nesterov=self.optimizer_cfg.nesterov
+        )
+
+
+        # 2. scheduler max_lr 对应多个 param group
+        if self.scheduler_t == "cyclic":
+            scheduler = {
+                "scheduler": torch.optim.lr_scheduler.OneCycleLR(
+                    optimizer,
+                    max_lr=[
+                        self.lr_schedule_cfg["max_lr"] * 0.5,
+                        self.lr_schedule_cfg["max_lr"] * 1.0,
+                        self.lr_schedule_cfg["max_lr"] * 1.5
+                    ],
+                    pct_start=self.lr_schedule_cfg["pct_start"],
+                    steps_per_epoch=self.lr_schedule_cfg["steps_per_epoch"],
+                    epochs=self.lr_schedule_cfg["epochs"]
+                ),
+                "interval": "step",
+            }
+
+        elif self.scheduler_t == "piecewise_constant":
+            scheduler = {
+                "scheduler": torch.optim.lr_scheduler.StepLR(optimizer, **self.lr_schedule_cfg),
+                "interval": "epoch",
+            }
+
+        return [optimizer], [scheduler]
+
 
     def training_step(self, batch, batch_idx):
         x, y = batch
@@ -137,7 +208,7 @@ class TreeClassifier(pl.LightningModule):
         Hook to update alphas at the start of each training epoch.
         """
         # get root validation accuracy on last epoch
-        self.update_alphas(self.latest_rootval_acc, self.current_epoch)
+        self.update_alphas(self.current_epoch, self.latest_rootval_acc)
         
         self.log("alpha1", self.alpha1, on_epoch=True)
         self.log("alpha2", self.alpha2, on_epoch=True)
@@ -152,8 +223,8 @@ class TreeClassifier(pl.LightningModule):
 
         loss = losses.mean()
         self.train_acc(preds, targets)
-        self.log("train.acc", self.train_acc, on_step=True)
-        self.log("train.loss", loss, on_step=True)
+        #self.log("train.acc", self.train_acc, on_step=True)
+        #self.log("train.loss", loss, on_step=True)
 
         return loss
     
@@ -170,21 +241,23 @@ class TreeClassifier(pl.LightningModule):
 
         self.val_acc(preds, targets)
         self.rootval_acc(batch_parts["root_preds"], targets)
+        is_animal = torch_isin(targets, torch.tensor(animal_classes, device=targets.device))
+        is_vehicle = torch_isin(targets, torch.tensor(vehicle_classes, device=targets.device))
+        self.val_animal_acc(preds[is_animal], targets[is_animal])
+        self.val_vehicle_acc(preds[is_vehicle], targets[is_vehicle])
+
         self.log("val.acc", self.val_acc, on_step=False, on_epoch=True)
+        self.log("rootval.acc", self.rootval_acc, on_step=False, on_epoch=True)
+        self.log("val.animal.acc", self.val_animal_acc, on_step=False, on_epoch=True)
+        self.log("val.vehicle.acc", self.val_vehicle_acc, on_step=False, on_epoch=True)
 
     def validation_epoch_end(self, outputs):
         """
         Hook to compute and store the latest validation root accuracy.
         """
         # Compute the accumulated root validation accuracy
-        rootval_acc = self.rootval_acc.compute()
-        self.latest_rootval_acc = rootval_acc.item()  # Store it as a class attribute
+        self.latest_rootval_acc = self.rootval_acc.compute().item()  # Store it as a class attribute
 
-        # Log the root validation accuracy
-        self.log("rootval.acc", rootval_acc, on_epoch=True)
-
-        # Reset the metric for the next epoch
-        self.rootval_acc.reset()
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):
         if isinstance(batch, dict):
@@ -201,41 +274,31 @@ class TreeClassifier(pl.LightningModule):
             return {"preds": preds, "targets": y}
     
     def test_step_end(self, batch_parts):
-        if len(batch_parts.keys()) > 2:  # 多任务预测
+        if len(batch_parts.keys()) > 2:
             targets = batch_parts.pop("targets")
             avg_acc = []
-
-            for key, preds in batch_parts.items():  # 遍历每个任务
+            for key, preds in batch_parts.items():
                 cur_acc = self.test_acc[key](preds, targets)
                 self.log(f"test.{key}", self.test_acc[key], on_step=False, on_epoch=True)
                 avg_acc.append(cur_acc)
 
-                # 计算每个任务的每个类别的准确率
-                unique_labels = torch.unique(targets)
-                for label in unique_labels:
-                    label_mask = targets == label
-                    label_preds = preds[label_mask]
-                    label_targets = targets[label_mask]
-                    if label_targets.numel() > 0:  # 避免除零错误
-                        label_acc = (label_preds == label_targets).float().mean()
-                        self.log(f"test.{key}.label_{label}.acc", label_acc, on_step=False, on_epoch=True)
-
-            # 记录所有任务的平均准确率
             self.log("test_avg.acc", torch.tensor(avg_acc).mean(), on_step=False, on_epoch=True)
-            self.test_acc.reset()  # ✅ Reset test_acc to avoid cumulative results
-        else:  # 单任务预测
+            is_animal = torch_isin(targets, torch.tensor(animal_classes, device=targets.device))
+            is_vehicle = torch_isin(targets, torch.tensor(vehicle_classes, device=targets.device))
+            self.test_animal_acc(preds[is_animal], targets[is_animal])
+            self.test_vehicle_acc(preds[is_vehicle], targets[is_vehicle])
+            self.log("test.animal.acc", self.test_animal_acc, on_step=False, on_epoch=True)
+            self.log("test.vehicle.acc", self.test_vehicle_acc, on_step=False, on_epoch=True)
+
+        else:
             preds = batch_parts["preds"]
             targets = batch_parts["targets"]
             self.test_acc(preds, targets)
             self.log("test.acc", self.test_acc, on_step=False, on_epoch=True)
-            self.test_acc.reset()  # ✅ Reset test_acc after logging
-
-            # 计算单任务的每个类别的准确率
-            unique_labels = torch.unique(targets)
-            for label in unique_labels:
-                label_mask = targets == label
-                label_preds = preds[label_mask]
-                label_targets = targets[label_mask]
-                if label_targets.numel() > 0:  # 避免除零错误
-                    label_acc = (label_preds == label_targets).float().mean()
-                    self.log(f"test.label_{label}.acc", label_acc, on_step=False, on_epoch=True)
+            
+            is_animal = torch_isin(targets, torch.tensor(animal_classes, device=targets.device))
+            is_vehicle = torch_isin(targets, torch.tensor(vehicle_classes, device=targets.device))
+            self.test_animal_acc(preds[is_animal], targets[is_animal])
+            self.test_vehicle_acc(preds[is_vehicle], targets[is_vehicle])
+            self.log("test.animal.acc", self.test_animal_acc, on_step=False, on_epoch=True)
+            self.log("test.vehicle.acc", self.test_vehicle_acc, on_step=False, on_epoch=True)
