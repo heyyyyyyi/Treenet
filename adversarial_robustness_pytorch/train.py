@@ -111,7 +111,7 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     else:
         logger.log('Standard Accuracy-\tTest: {:.2f}%.'.format(test_acc*100))
     epoch_metrics = {'train_'+k: v for k, v in res.items()}
-    epoch_metrics.update({'epoch': epoch, 'lr': last_lr, 'test_clean_acc': test_acc, 'test_adversarial_acc': None})
+    epoch_metrics.update({'epoch': epoch, 'lr': last_lr, 'test_clean_acc': test_acc, 'test_adversarial_acc': 0.0})
     
     if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
         test_adv_acc = trainer.eval(test_dataloader, adversarial=True)

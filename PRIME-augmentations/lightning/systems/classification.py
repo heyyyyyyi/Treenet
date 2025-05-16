@@ -5,6 +5,19 @@ import torch
 import torch.nn.functional as F
 import torchmetrics
 from torch import nn
+from lightning import animal_classes, vehicle_classes
+
+def torch_isin(elements: torch.Tensor, test_elements: torch.Tensor) -> torch.Tensor:
+    """
+    Replacement for torch.isin for PyTorch < 1.10
+    """
+    test_elements = test_elements.to(elements.device)
+
+    elements_shape = elements.shape
+    elements_flat = elements.flatten()
+    test_elements_flat = test_elements.flatten()
+    result = (elements_flat[..., None] == test_elements_flat).any(-1)
+    return result.reshape(elements_shape)
 
 
 class Classifier(pl.LightningModule):
@@ -25,6 +38,8 @@ class Classifier(pl.LightningModule):
 
         self.train_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
         self.val_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+        self.val_animal_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+        self.val_vehicle_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
 
         if test_keys is None:
             self.test_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
@@ -79,7 +94,16 @@ class Classifier(pl.LightningModule):
         targets=batch_parts["targets"]
 
         self.val_acc(preds, targets)
+        
+        is_animal = torch_isin(targets, torch.tensor(animal_classes, device=targets.device))
+        is_vehicle = torch_isin(targets, torch.tensor(vehicle_classes, device=targets.device))
+        self.val_animal_acc(preds[is_animal], targets[is_animal])
+        self.val_vehicle_acc(preds[is_vehicle], targets[is_vehicle])
+
         self.log("val.acc", self.val_acc, on_step=False, on_epoch=True)
+        self.log("val.animal.acc", self.val_animal_acc, on_step=False, on_epoch=True)
+        self.log("val.vehicle.acc", self.val_vehicle_acc, on_step=False, on_epoch=True)
+
         
     def test_step(self, batch, batch_idx, dataloader_idx=None):
         if isinstance(batch, dict):
@@ -104,29 +128,23 @@ class Classifier(pl.LightningModule):
                 self.log(f"test.{key}", self.test_acc[key], on_step=False, on_epoch=True)
                 avg_acc.append(cur_acc)
 
-                # 计算每个任务的每个类别的准确率
-                unique_labels = torch.unique(targets)
-                for label in unique_labels:
-                    label_mask = targets == label
-                    label_preds = preds[label_mask]
-                    label_targets = targets[label_mask]
-                    if label_targets.numel() > 0:  # 避免除零错误
-                        label_acc = (label_preds == label_targets).float().mean()
-                        self.log(f"test.{key}.label_{label}.acc", label_acc, on_step=False, on_epoch=True)
-
             self.log("test_avg.acc", torch.tensor(avg_acc).mean(), on_step=False, on_epoch=True)
+            is_animal = torch_isin(targets, torch.tensor(animal_classes, device=targets.device))
+            is_vehicle = torch_isin(targets, torch.tensor(vehicle_classes, device=targets.device))
+            self.test_animal_acc(preds[is_animal], targets[is_animal])
+            self.test_vehicle_acc(preds[is_vehicle], targets[is_vehicle])
+            self.log("test.animal.acc", self.test_animal_acc, on_step=False, on_epoch=True)
+            self.log("test.vehicle.acc", self.test_vehicle_acc, on_step=False, on_epoch=True)
+
         else:
             preds = batch_parts["preds"]
             targets = batch_parts["targets"]
             self.test_acc(preds, targets)
             self.log("test.acc", self.test_acc, on_step=False, on_epoch=True)
-
-            # 计算单任务的每个类别的准确率
-            unique_labels = torch.unique(targets)
-            for label in unique_labels:
-                label_mask = targets == label
-                label_preds = preds[label_mask]
-                label_targets = targets[label_mask]
-                if label_targets.numel() > 0:  # 避免除零错误
-                    label_acc = (label_preds == label_targets).float().mean()
-                    self.log(f"test.label_{label}.acc", label_acc, on_step=False, on_epoch=True)
+            
+            is_animal = torch_isin(targets, torch.tensor(animal_classes, device=targets.device))
+            is_vehicle = torch_isin(targets, torch.tensor(vehicle_classes, device=targets.device))
+            self.test_animal_acc(preds[is_animal], targets[is_animal])
+            self.test_vehicle_acc(preds[is_vehicle], targets[is_vehicle])
+            self.log("test.animal.acc", self.test_animal_acc, on_step=False, on_epoch=True)
+            self.log("test.vehicle.acc", self.test_vehicle_acc, on_step=False, on_epoch=True)
