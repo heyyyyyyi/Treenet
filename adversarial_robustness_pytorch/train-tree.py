@@ -145,13 +145,13 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         'test_clean_acc_vehicle': acc_vehicle,
         'test_clean_root_acc_animal': root_acc_animal,
         'test_clean_root_acc_vehicle': root_acc_vehicle,
-        'test_adversarial_acc': '',
-        'test_adversarial_root_acc': '',
-        'test_adversarial_root_acc_bi': '',
-        'test_adversarial_acc_animal': '',
-        'test_adversarial_acc_vehicle': '',
-        'test_adversarial_root_acc_animal': '',
-        'test_adversarial_root_acc_vehicle': '',
+        'test_adversarial_acc': None,
+        'test_adversarial_root_acc': None,
+        'test_adversarial_root_acc_bi': None,
+        'test_adversarial_acc_animal': None,
+        'test_adversarial_acc_vehicle': None,
+        'test_adversarial_root_acc_animal': None,
+        'test_adversarial_root_acc_vehicle': None,
     })
     
     if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):

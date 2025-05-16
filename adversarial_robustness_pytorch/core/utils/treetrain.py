@@ -8,13 +8,15 @@ import os
 import torch
 import torch.nn as nn
 
-from .rst import CosineLR
 
 from core.attacks import create_attack
 from core.metrics import accuracy, binary_accuracy, subclass_accuracy
 from core.models import create_model
 
 from core.models import Normalization
+from .mart import mart_loss
+from .rst import CosineLR
+from .trades import trades_loss
 
 from core.models.treeresnet import lighttreeresnet
 
@@ -149,47 +151,47 @@ class TreeEnsemble(object):
         else:
             self.scheduler = None
 
-    # def update_alphas(self, current_epoch: int, root_acc: float):
-    #     """
-    #     Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
-    #     """
-    #     progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
-    #     self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
-    #     alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
-
-    #     # Use a custom strategy if provided
-    #     if callable(self.alpha_update_strategy):
-    #         self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
-    #     else:
-    #         # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
-    #         balance_ratio = self.alpha_update_strategy["balance_ratio"]
-    #         self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-    #         self.alpha3 = alpha23_total / (1 + balance_ratio)
-    #     return self.alpha1, self.alpha2, self.alpha3
-        
     def update_alphas(self, current_epoch: int, root_acc: float):
         """
-        Update alpha1, alpha2, alpha3 dynamically based on epoch and root accuracy.
-        This ensures: alpha1 dominates early, then reduces over time, adjusted by root acc.
-
-        alpha1 : 0.9 -> 0.5 -> 0.1 
+        Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
         """
-    
-        if current_epoch < self.max_epochs * 0.15 and root_acc < 0.65:
-            self.alpha1 = 0.9
-        elif current_epoch > self.max_epochs * 0.7:
-            self.alpha1 = 0.1
+        progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
+        self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
+        alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
+
+        # Use a custom strategy if provided
+        if callable(self.alpha_update_strategy):
+            self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
         else:
-            self.alpha1 = 0.5
-
-        balance_ratio = self.alpha_update_strategy["balance_ratio"]
-
-        # Remaining portion goes to alpha2 and alpha3
-        alpha23_total = 1.0 - self.alpha1
-        self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-        self.alpha3 = alpha23_total / (1 + balance_ratio)
-
+            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+            balance_ratio = self.alpha_update_strategy["balance_ratio"]
+            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+            self.alpha3 = alpha23_total / (1 + balance_ratio)
         return self.alpha1, self.alpha2, self.alpha3
+        
+    # def update_alphas(self, current_epoch: int, root_acc: float):
+    #     """
+    #     Update alpha1, alpha2, alpha3 dynamically based on epoch and root accuracy.
+    #     This ensures: alpha1 dominates early, then reduces over time, adjusted by root acc.
+
+    #     alpha1 : 0.9 -> 0.5 -> 0.1 
+    #     """
+    
+    #     if current_epoch < self.max_epochs * 0.15 and root_acc < 0.65:
+    #         self.alpha1 = 0.9
+    #     elif current_epoch > self.max_epochs * 0.7:
+    #         self.alpha1 = 0.1
+    #     else:
+    #         self.alpha1 = 0.5
+
+    #     balance_ratio = self.alpha_update_strategy["balance_ratio"]
+
+    #     # Remaining portion goes to alpha2 and alpha3
+    #     alpha23_total = 1.0 - self.alpha1
+    #     self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+    #     self.alpha3 = alpha23_total / (1 + balance_ratio)
+
+    #     return self.alpha1, self.alpha2, self.alpha3
 
     def forward(self, x):
         root_logits, subroot_logits = self.model(x)
@@ -299,61 +301,22 @@ class TreeEnsemble(object):
     
     def trades_loss(self, x, y, beta):
         """
-        TRADES training. need to change 
+        TRADES training. TO DO ... 
         """
-        self.optimizer.zero_grad()
-        root_logits, subroot_logits = self(x)
-        preds = torch.argmax(subroot_logits, 1)
+        loss, batch_metrics = trades_loss(self.model, x, y, self.optimizer, step_size=self.params.attack_step, 
+                                          epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
+                                          beta=beta, attack=self.params.attack)
+        return loss, batch_metrics  
 
-        root_loss, _ = self.root_trainer.trades_loss(root_logits, y)
-
-        subroot_loss_animal = torch.tensor(0.0, device=y.device)
-        subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
-
-        animal_classes_index = torch.tensor(animal_classes, device=y.device)
-        vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
-
-        is_animal = torch.isin(y, animal_classes_index)
-        is_vehicle = torch.isin(y, vehicle_classes_index)
-
-        if is_animal.any():
-            subroot_loss_animal, _ = self.animal_trainer.trades_loss(subroot_logits[is_animal], y[is_animal], beta)
-        if is_vehicle.any():
-            subroot_loss_vehicle, _ = self.vehicle_trainer.trades_loss(subroot_logits[is_vehicle], y[is_vehicle], beta)
-
-        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
-        
-        batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
-        return loss, batch_metrics
-
+    
     def mart_loss(self, x, y, beta):
         """
-        MART training. need to change 
+        MART training. TO DO ...
         """
-        self.optimizer.zero_grad()
-        root_logits, subroot_logits = self(x)
-        preds = torch.argmax(subroot_logits, 1)
-
-        root_loss, _ = self.root_trainer.mart_loss(root_logits, y)
-
-        subroot_loss_animal = torch.tensor(0.0, device=y.device)
-        subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
-
-        animal_classes_index = torch.tensor(animal_classes, device=y.device)
-        vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
-
-        is_animal = torch.isin(y, animal_classes_index)
-        is_vehicle = torch.isin(y, vehicle_classes_index)
-
-        if is_animal.any():
-            subroot_loss_animal, _ = self.animal_trainer.mart_loss(subroot_logits[is_animal], y[is_animal], beta)
-        if is_vehicle.any():
-            subroot_loss_vehicle, _ = self.vehicle_trainer.mart_loss(subroot_logits[is_vehicle], y[is_vehicle], beta)
-
-        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
-        
-        batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
-        return loss, batch_metrics
+        loss, batch_metrics = mart_loss(self.model, x, y, self.optimizer, step_size=self.params.attack_step, 
+                                        epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
+                                        beta=beta, attack=self.params.attack)
+        return loss, batch_metrics  
 
     def eval(self, dataloader, adversarial=False):
         """
@@ -362,8 +325,6 @@ class TreeEnsemble(object):
         acc, acc_animal, acc_vehicle = 0.0, 0.0, 0.0
         root_acc, root_acc_animal, root_acc_vehicle = 0.0, 0.0, 0.0
         root_acc_bi = 0.0
-
-        animal_count, vehicle_count = 0, 0
 
         self.model.eval()
         
@@ -381,9 +342,6 @@ class TreeEnsemble(object):
             acc_animal += temp_acc_animal
             acc_vehicle += temp_acc_vehicle
 
-            animal_count += torch.isin(y, torch.tensor(animal_classes, device=y.device)).sum().item()
-            vehicle_count += torch.isin(y, torch.tensor(vehicle_classes, device=y.device)).sum().item()
-
             # 10 classes
             root_acc += accuracy(y, root_out)
             temp_root_acc_animal, temp_root_acc_vehicle = subclass_accuracy(y, root_out)
@@ -395,12 +353,9 @@ class TreeEnsemble(object):
         acc /= len(dataloader)
         root_acc /= len(dataloader)
         root_acc_bi /= len(dataloader)
+        acc_animal /= len(dataloader)
+        acc_vehicle /= len(dataloader)
         
-        acc_animal = acc_animal / animal_count if animal_count > 0 else 0.0
-        acc_vehicle = acc_vehicle / vehicle_count if vehicle_count > 0 else 0.0
-        root_acc_animal = root_acc_animal / animal_count if animal_count > 0 else 0.0
-        root_acc_vehicle = root_acc_vehicle / vehicle_count if vehicle_count > 0 else 0.0
-
         return dict(
             acc=acc,
             acc_animal=acc_animal,
