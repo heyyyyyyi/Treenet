@@ -248,7 +248,7 @@ class LightTreeResNet(nn.Module):
 class LightTreeResNet20(LightTreeResNet):
     def __init__(self, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, **kwargs):
         super(LightTreeResNet20, self).__init__( 
-            BasicBlock, [2, 1], [1, 1], 
+            BasicBlock, [2, 1], [1, 2], 
             num_channels=num_channels, num_classes=num_classes,
             linear_bias=linear_bias, bn_affine=bn_affine
         )
