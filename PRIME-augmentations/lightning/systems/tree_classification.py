@@ -45,6 +45,7 @@ class TreeClassifier(pl.LightningModule):
 
         self.val_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
         self.rootval_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
+        self.rootval_acc_binary = torchmetrics.Accuracy(dist_sync_on_step=True)
         self.val_animal_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
         self.val_vehicle_acc = torchmetrics.Accuracy(dist_sync_on_step=True)
 
@@ -67,26 +68,26 @@ class TreeClassifier(pl.LightningModule):
         self.alpha_update_strategy = alpha_update_strategy or {
             "balance_ratio": 3 / 2,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
         }
+    # method: linear
+    # def update_alphas(self, current_epoch: int, root_acc: float):
+    #     """
+    #     Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
+    #     """
+    #     progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
+    #     self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
+    #     alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
 
-    def update_alphas(self, current_epoch: int, root_acc: float):
-        """
-        Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
-        """
-        progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
-        self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
-        alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
-
-        # Use a custom strategy if provided
-        if callable(self.alpha_update_strategy):
-            self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
-        else:
-            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
-            balance_ratio = self.alpha_update_strategy["balance_ratio"]
-            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-            self.alpha3 = alpha23_total / (1 + balance_ratio)
+    #     # Use a custom strategy if provided
+    #     if callable(self.alpha_update_strategy):
+    #         self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
+    #     else:
+    #         # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+    #         balance_ratio = self.alpha_update_strategy["balance_ratio"]
+    #         self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+    #         self.alpha3 = alpha23_total / (1 + balance_ratio)
         
 
-
+    # method: 3 stages
     # def update_alphas(self, current_epoch: int, root_acc: float):
     #     """
     #     Update alpha1, alpha2, alpha3 dynamically based on epoch and root accuracy.
@@ -109,6 +110,17 @@ class TreeClassifier(pl.LightningModule):
     #     self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
     #     self.alpha3 = alpha23_total / (1 + balance_ratio)
 
+    # method: 2 stages
+    def update_alphas(self, current_epoch: int, root_acc: float):
+        if current_epoch <= self.max_epochs * 0.1:
+            self.alpha1 = 0.9 - 0.8 * (current_epoch / (self.max_epochs * 0.1))
+        else:
+            self.alpha1 = 0.01
+        # Remaining portion goes to alpha2 and alpha3
+        alpha23_total = 1.0 - self.alpha1
+        balance_ratio = self.alpha_update_strategy["balance_ratio"]
+        self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+        self.alpha3 = alpha23_total / (1 + balance_ratio)
 
     def forward(self, x):
         root_logits, subroot_logits = self.model(x)
@@ -238,9 +250,15 @@ class TreeClassifier(pl.LightningModule):
     def validation_step_end(self, batch_parts):
         preds=batch_parts["subroot_preds"]
         targets=batch_parts["targets"]
+        root_preds=batch_parts["root_preds"]
 
         self.val_acc(preds, targets)
-        self.rootval_acc(batch_parts["root_preds"], targets)
+        self.rootval_acc(root_preds, targets)
+        self.rootval_acc_binary(
+            torch_isin(root_preds, torch.tensor(animal_classes, device=targets.device)).long(), 
+            torch_isin(targets, torch.tensor(animal_classes, device=targets.device)).long()
+        )
+
         is_animal = torch_isin(targets, torch.tensor(animal_classes, device=targets.device))
         is_vehicle = torch_isin(targets, torch.tensor(vehicle_classes, device=targets.device))
         self.val_animal_acc(preds[is_animal], targets[is_animal])
@@ -248,6 +266,7 @@ class TreeClassifier(pl.LightningModule):
 
         self.log("val.acc", self.val_acc, on_step=False, on_epoch=True)
         self.log("rootval.acc", self.rootval_acc, on_step=False, on_epoch=True)
+        self.log("rootval_binary.acc", self.rootval_acc_binary, on_step=False, on_epoch=True)
         self.log("val.animal.acc", self.val_animal_acc, on_step=False, on_epoch=True)
         self.log("val.vehicle.acc", self.val_vehicle_acc, on_step=False, on_epoch=True)
 
