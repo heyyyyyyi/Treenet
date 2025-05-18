@@ -152,15 +152,23 @@ class TreeEnsemble(object):
             self.scheduler = None
 
     def update_alphas(self, current_epoch: int, root_acc: float):
-        if current_epoch <= self.max_epochs * 0.1:
-            self.alpha1 = 0.9 - 0.8 * (current_epoch / (self.max_epochs * 0.1))
+        """
+        Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
+        """
+        progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
+        self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
+        alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
+
+        # Use a custom strategy if provided
+        if callable(self.alpha_update_strategy):
+            self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
         else:
-            self.alpha1 = 0.01
-        # Remaining portion goes to alpha2 and alpha3
-        alpha23_total = 1.0 - self.alpha1
-        balance_ratio = self.alpha_update_strategy["balance_ratio"]
-        self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-        self.alpha3 = alpha23_total / (1 + balance_ratio)
+            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+            balance_ratio = self.alpha_update_strategy["balance_ratio"]
+            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+            self.alpha3 = alpha23_total / (1 + balance_ratio)
+
+            return self.alpha1, self.alpha2, self.alpha3
 
     def forward(self, x):
         root_logits, subroot_logits = self.model(x)
@@ -208,7 +216,11 @@ class TreeEnsemble(object):
         #print(len(logits_set), len(root_logits), len(subroot_logits), len(y))
         preds = torch.argmax(subroot_logits, 1)
 
-        root_loss = self.root_trainer.criterion(root_logits, y)
+        #root_loss = self.root_trainer.criterion(root_logits, y)
+        root_loss = self.root_trainer.criterion(
+            torch.isin(preds, torch.tensor(animal_classes, device=y.device)).long(), 
+            torch.isin(y, torch.tensor(animal_classes, device=y.device)).long()
+        )
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
