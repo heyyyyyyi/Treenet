@@ -218,7 +218,7 @@ class TreeEnsemble(object):
 
         #root_loss = self.root_trainer.criterion(root_logits, y)
         root_loss = self.root_trainer.criterion(
-            torch.isin(preds, torch.tensor(animal_classes, device=y.device)).long(), 
+            root_logits, 
             torch.isin(y, torch.tensor(animal_classes, device=y.device)).long()
         )
 

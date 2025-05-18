@@ -197,9 +197,9 @@ class TreeClassifier(pl.LightningModule):
 
         #root_loss = F.cross_entropy(root_logits, y)
         root_loss = F.cross_entropy(
-            torch_isin(preds, torch.tensor(animal_classes, device=y.device)).long(), 
+            root_logits,
             torch_isin(y, torch.tensor(animal_classes, device=y.device)).long()
-            )
+        )
         
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)

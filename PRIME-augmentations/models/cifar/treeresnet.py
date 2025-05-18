@@ -205,7 +205,7 @@ class LightSubRootResNet(nn.Module):
 
 # samilar to TreeResNet, change the root model to LightRootResnet, and subroot model to LightSubRootResNet
 class LightTreeResNet(nn.Module):
-    def __init__(self, block, root_num_blocks, subroot_num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True):
+    def __init__(self, block, root_num_blocks, subroot_num_blocks, num_channels=3, num_classes=2, linear_bias=True, bn_affine=True):
         super(LightTreeResNet, self).__init__()
         self.root_model = LightRootResnet(block, root_num_blocks, num_channels=num_channels, num_classes=num_classes,linear_bias=linear_bias,bn_affine=bn_affine)  # 10分类 
         self.subroot_animal = LightSubRootResNet(block, subroot_num_blocks, num_classes=7,linear_bias=linear_bias,bn_affine=bn_affine)  # 6种动物 + 1 none of them

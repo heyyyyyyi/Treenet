@@ -249,7 +249,7 @@ def LightTreeResNet20(name, num_classes=10, pretrained=False, device='cpu'):
     raise ValueError('Only resnet18, resnet34, resnet50 and resnet101 are supported!')
     return
 
-def lighttreeresnet(name, num_classes=10, pretrained=False, device='cpu'):
+def lighttreeresnet(name, num_classes=2, pretrained=False, device='cpu'):
     """
     Returns suitable Light Resnet model from its name.
     Arguments:
