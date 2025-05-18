@@ -161,7 +161,8 @@ class TreeEnsemble(object):
         balance_ratio = self.alpha_update_strategy["balance_ratio"]
         self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
         self.alpha3 = alpha23_total / (1 + balance_ratio)
-
+        return self.alpha1, self.alpha2, self.alpha3
+    
     def forward(self, x):
         root_logits, subroot_logits = self.model(x)
         return root_logits, subroot_logits
