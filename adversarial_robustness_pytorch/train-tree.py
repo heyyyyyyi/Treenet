@@ -96,6 +96,8 @@ if NUM_ADV_EPOCHS > 0:
     logger.log('Adversarial training for {} epochs'.format(NUM_ADV_EPOCHS))
     trainer.init_optimizer(args.num_adv_epochs)
     test_adv_acc = 0.0    
+    test_adversarial_acc_animal = 0.0
+    test_adversarial_acc_vehicle = 0.0
     
 
 for epoch in range(1, NUM_ADV_EPOCHS+1):
@@ -143,9 +145,9 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         'test_clean_root_acc_bi': root_acc_bi,
         'test_clean_acc_animal': acc_animal,
         'test_clean_acc_vehicle': acc_vehicle,
-        'test_adversarial_acc': 0.0,
-        'test_adversarial_acc_animal': 0.0,
-        'test_adversarial_acc_vehicle': 0.0,
+        'test_adversarial_acc': None,
+        'test_adversarial_acc_animal': None,
+        'test_adversarial_acc_vehicle': None,
     })
     
     if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
