@@ -214,7 +214,7 @@ class TreeEnsemble(object):
         """
         root_logits, subroot_logits = logits_set
         #print(len(logits_set), len(root_logits), len(subroot_logits), len(y))
-        preds = torch.argmax(subroot_logits, 1)
+        #preds = torch.argmax(subroot_logits, 1)
 
         #root_loss = self.root_trainer.criterion(root_logits, y)
         root_loss = self.root_trainer.criterion(
@@ -259,7 +259,7 @@ class TreeEnsemble(object):
         with ctx_noparamgrad_and_eval(self.model):
             x_adv, _ = self.attack.perturb(x, y)
 
-        self.model.train()
+        #self.model.train()
         self.optimizer.zero_grad()
         if self.params.keep_clean:
             x_adv = torch.cat((x, x_adv), dim=0)
