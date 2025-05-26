@@ -46,7 +46,7 @@ def get_data_info(data_dir):
 
 
 def load_data(data_dir, batch_size=256, batch_size_test=256, num_workers=4, use_augmentation=False, shuffle_train=True, 
-              aux_data_filename=None, unsup_fraction=None, validation=False):
+              aux_data_filename=None, unsup_fraction=None, validation=False, filter_classes=None, binary_classes=None):
     """
     Returns train, test datasets and dataloaders.
     Arguments:
@@ -58,33 +58,56 @@ def load_data(data_dir, batch_size=256, batch_size_test=256, num_workers=4, use_
         shuffle_train (bool): whether to shuffle training set.
         aux_data_filename (str): path to unlabelled data.
         unsup_fraction (float): fraction of unlabelled data per batch.
-        validation (bool): if True, also returns a validation dataloader for unspervised cifar10 (as in Gowal et al, 2020).
+        validation (bool): if True, also returns a validation dataloader for unsupervised cifar10 (as in Gowal et al, 2020).
+        filter_classes (list): List of class indices to keep in the dataset.
+        binary_classes (list): List of class indices to map to label 1 for binary classification.
     """
     dataset = os.path.basename(os.path.normpath(data_dir))
     load_dataset_fn = _LOAD_DATASET_FN[dataset]
-    
-    if validation:
-        assert dataset in SEMISUP_DATASETS, 'Only semi-supervised datasets allow a validation set.'
-        train_dataset, test_dataset, val_dataset = load_dataset_fn(data_dir=data_dir, use_augmentation=use_augmentation, 
-                                                                   aux_data_filename=aux_data_filename, validation=True)
-    else:
-        train_dataset, test_dataset = load_dataset_fn(data_dir=data_dir, use_augmentation=use_augmentation)
-       
+
     if dataset in SEMISUP_DATASETS:
+        # Load semi-supervised datasets
+        if validation:
+            train_dataset, test_dataset, val_dataset = load_dataset_fn(
+                data_dir=data_dir, use_augmentation=use_augmentation, aux_data_filename=aux_data_filename, validation=True
+            )
+        else:
+            train_dataset, test_dataset = load_dataset_fn(
+                data_dir=data_dir, use_augmentation=use_augmentation, aux_data_filename=aux_data_filename, validation=False
+            )
+
+        # Apply class filtering and binary relabeling
+        if filter_classes is not None:
+            train_dataset.filter_classes(filter_classes)
+            test_dataset.filter_classes(filter_classes)
+        if binary_classes is not None:
+            train_dataset.relabel_binary(binary_classes)
+            test_dataset.relabel_binary(binary_classes)
+
+        # Get dataloaders
         if validation:
             train_dataloader, test_dataloader, val_dataloader = get_semisup_dataloaders(
                 train_dataset, test_dataset, val_dataset, batch_size, batch_size_test, num_workers, unsup_fraction
             )
+            return train_dataset, test_dataset, val_dataset, train_dataloader, test_dataloader, val_dataloader
         else:
             train_dataloader, test_dataloader = get_semisup_dataloaders(
                 train_dataset, test_dataset, None, batch_size, batch_size_test, num_workers, unsup_fraction
             )
+            return train_dataset, test_dataset, train_dataloader, test_dataloader
+
     else:
+        # Load standard datasets
+        train_dataset, test_dataset = load_dataset_fn(
+            data_dir=data_dir, use_augmentation=use_augmentation, filter_classes=filter_classes, binary_classes=binary_classes
+        )
+
+        # Get dataloaders
         pin_memory = torch.cuda.is_available()
-        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle_train, 
-                                                       num_workers=num_workers, pin_memory=pin_memory)
-        test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size_test, shuffle=False, 
-                                                      num_workers=num_workers, pin_memory=pin_memory)
-    if validation:
-        return train_dataset, test_dataset, val_dataset, train_dataloader, test_dataloader, val_dataloader
-    return train_dataset, test_dataset, train_dataloader, test_dataloader
+        train_dataloader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=shuffle_train, num_workers=num_workers, pin_memory=pin_memory
+        )
+        test_dataloader = torch.utils.data.DataLoader(
+            test_dataset, batch_size=batch_size_test, shuffle=False, num_workers=num_workers, pin_memory=pin_memory
+        )
+        return train_dataset, test_dataset, train_dataloader, test_dataloader

@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from core.attacks import create_attack
-from core.metrics import accuracy
+from core.metrics import accuracy, binary_accuracy, subclass_accuracy
 from core.models import create_model
 
 from .context import ctx_noparamgrad_and_eval
@@ -200,6 +200,7 @@ class Trainer(object):
         Evaluate performance of the model.
         """
         acc = 0.0
+        #acc_animal, acc_vehicle, acc_bi = 0.0, 0.0, 0.0
         self.model.eval()
         
         for x, y in dataloader:
@@ -211,8 +212,22 @@ class Trainer(object):
             else:
                 out = self.model(x)
             acc += accuracy(y, out)
+            # temp_acc_animal, temp_acc_vehicle = subclass_accuracy(y, out)
+            # acc_animal += temp_acc_animal
+            # acc_vehicle += temp_acc_vehicle
+            # acc_bi += binary_accuracy(y, out)
+
         acc /= len(dataloader)
-        return acc
+        # acc_animal /= len(dataloader)
+        # acc_vehicle /= len(dataloader)
+        # acc_bi /= len(dataloader)
+
+        return dict(
+            acc=acc,
+            # acc_animal=acc_animal,
+            # acc_vehicle=acc_vehicle,
+            # acc_bi=acc_bi
+        )
 
     
     def save_model(self, path):

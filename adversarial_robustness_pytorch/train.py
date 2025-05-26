@@ -22,11 +22,12 @@ from core.utils import Logger
 from core.utils import parser_train
 from core.utils import Trainer
 from core.utils import seed
+from core import animal_classes, vehicle_classes
 
 import wandb
 
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
-_WANDB_PROJECT = "ADV-light20"
+_WANDB_PROJECT = "baseline-adv-resnet20"
 
 
 # Setup
@@ -66,12 +67,12 @@ torch.backends.cudnn.benchmark = True
 
 
 
-# Load data
+# Load data for binary classification (1 for animal_classes, 0 for others)
 
 seed(args.seed)
 train_dataset, test_dataset, train_dataloader, test_dataloader = load_data(
     DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, use_augmentation=args.augment, shuffle_train=True, 
-    aux_data_filename=args.aux_data_filename, unsup_fraction=args.unsup_fraction
+    aux_data_filename=args.aux_data_filename, unsup_fraction=args.unsup_fraction, filter_classes=vehicle_classes
 )
 del train_dataset, test_dataset
 
@@ -80,6 +81,15 @@ del train_dataset, test_dataset
 # Adversarial Training (AT, TRADES and MART)
 
 seed(args.seed)
+
+# info['num_classes'] = 6 # for animal
+info['num_classes'] = 4 # for vehicle
+# info['num_classes'] = 2 # for binary
+print(train_dataloader.dataset.data.shape)
+print(test_dataloader.dataset.data.shape)
+
+#checkpoint()
+
 trainer = Trainer(info, args)
 last_lr = args.lr
 
@@ -87,7 +97,7 @@ last_lr = args.lr
 if NUM_ADV_EPOCHS > 0:
     logger.log('\n\n')
     metrics = pd.DataFrame()
-    logger.log('Standard Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader)*100))
+    logger.log('Standard Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader)['acc']*100))
     
     old_score = [0.0, 0.0]
     logger.log('Adversarial training for {} epochs'.format(NUM_ADV_EPOCHS))
@@ -103,7 +113,11 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         last_lr = trainer.scheduler.get_last_lr()[0]
     
     res = trainer.train(train_dataloader, epoch=epoch, adversarial=True)
-    test_acc = trainer.eval(test_dataloader)
+    test_res = trainer.eval(test_dataloader)
+    test_acc = test_res['acc']
+    # acc_animal = test_res['acc_animal'] 
+    # acc_vehicle = test_res['acc_vehicle'] 
+    # acc_bi = test_res['acc_bi']
 
     logger.log('Loss: {:.4f}.\tLR: {:.4f}'.format(res['loss'], last_lr))
     if 'clean_acc' in res:
@@ -111,13 +125,32 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     else:
         logger.log('Standard Accuracy-\tTest: {:.2f}%.'.format(test_acc*100))
     epoch_metrics = {'train_'+k: v for k, v in res.items()}
-    epoch_metrics.update({'epoch': epoch, 'lr': last_lr, 'test_clean_acc': test_acc, 'test_adversarial_acc': None})
+    epoch_metrics.update({
+        'epoch': epoch, 
+        'lr': last_lr, 
+        # 'test_clean_acc': test_acc,
+        # 'test_clean_acc_animal': test_acc,
+        'test_clean_acc_vehicle': test_acc,
+        #'test_clean_acc_bi': test_acc,
+        # 'test_adversarial_acc': None,
+        # 'test_acversarial_acc_animal': None,
+        'test_adversarial_acc_vehicle': None,
+        #'test_adversarial_acc_bi': None
+        })
     
     if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
-        test_adv_acc = trainer.eval(test_dataloader, adversarial=True)
+        test_adv_res = trainer.eval(test_dataloader, adversarial=True)
+        # test_adv_acc = test_adv_res['acc']
+        # test_adv_acc_animal = test_adv_res['acc']
+        test_adv_acc_vehicle = test_adv_res['acc']
+        #test_adv_acc_bi = test_adv_res['acc']
+        
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
                                                                                    test_adv_acc*100))
-        epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
+        # epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
+        # epoch_metrics.update({'test_adversarial_acc_animal': test_adv_acc_animal})
+        epoch_metrics.update({'test_adversarial_acc_vehicle': test_adv_acc_vehicle})
+        # epoch_metrics.update({'test_adversarial_acc_bi': test_adv_acc_bi})
     else:
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
     
@@ -136,7 +169,7 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     
 # Record metrics
 
-train_acc = res['clean_acc'] if 'clean_acc' in res else trainer.eval(train_dataloader)
+train_acc = res['clean_acc'] if 'clean_acc' in res else trainer.eval(train_dataloader)['acc']
 logger.log('\nTraining completed.')
 logger.log('Standard Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(train_acc*100, old_score[0]*100))
 if NUM_ADV_EPOCHS > 0:

@@ -118,13 +118,41 @@ class SemiSupervisedDataset(torch.utils.data.Dataset):
         self.dataset.labels = self.targets
         return self.dataset[item]
     
+    def filter_classes(self, class_indices):
+        """
+        Filters the dataset to include only the specified classes and remaps labels to a contiguous range.
+        Arguments:
+            class_indices (list): List of class indices to keep.
+        """
+        class_indices = set(class_indices)
+        mask = np.isin(self.targets, list(class_indices) + [-1])  # Include -1 (unlabeled data)
+        self.data = self.data[mask]
+        self.targets = np.array(self.targets)[mask].tolist()
+
+        # Update sup_indices and unsup_indices
+        self.sup_indices = [i for i, target in enumerate(self.targets) if target != -1]
+        self.unsup_indices = [i for i, target in enumerate(self.targets) if target == -1]
+
+        # Remap labels to a contiguous range starting from 0 for supervised data
+        class_mapping = {old_label: new_label for new_label, old_label in enumerate(class_indices)}
+        self.targets = [class_mapping[label] if label in class_mapping else -1 for label in self.targets]
+    
+    def relabel_binary(self, positive_classes):
+        """
+        Relabel the dataset for binary classification.
+        Arguments:
+            positive_classes (list): List of class indices to map to label 1.
+        """
+        positive_classes = set(positive_classes)
+        self.targets = [1 if label in positive_classes else 0 for label in self.targets]
+    
     
 class SemiSupervisedSampler(torch.utils.data.Sampler):
     """
     Balanced sampling from the labeled and unlabeled data.
     """
     def __init__(self, sup_inds, unsup_inds, batch_size, unsup_fraction=0.5, num_batches=None):
-        if unsup_fraction is None or unsup_fraction < 0:
+        if unsup_fraction is None or unsup_fraction <= 0 or len(unsup_inds) == 0:
             self.sup_inds = sup_inds + unsup_inds
             unsup_fraction = 0.0
         else:
@@ -150,7 +178,7 @@ class SemiSupervisedSampler(torch.utils.data.Sampler):
                 if batch_counter == self.num_batches:
                     break
                 batch = sup_inds_shuffled[sup_k:(sup_k + self.sup_batch_size)]
-                if self.sup_batch_size < self.batch_size:
+                if self.sup_batch_size < self.batch_size and len(self.unsup_inds) > 0:
                     batch.extend([self.unsup_inds[i] for i in torch.randint(high=len(self.unsup_inds), 
                                                                             size=(self.batch_size - len(batch),), 
                                                                             dtype=torch.int64)])

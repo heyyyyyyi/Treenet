@@ -144,7 +144,7 @@ def resnet(name, num_classes=10, pretrained=False, device='cpu'):
     Returns suitable Resnet model from its name.
     Arguments:
         name (str): name of resnet architecture.
-        num_classes (int): number of target classes.
+        num_classes (int): number of target classes (set to 2 for binary classification).
         pretrained (bool): whether to use a pretrained model.
         device (str or torch.device): device to work on.
     Returns:
