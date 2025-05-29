@@ -76,16 +76,40 @@ class TreeEnsemble(object):
     
     @staticmethod
     def init_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step):
+        
         class wrapper(object):
             def __init__(self, model):
                 self.model = model
 
             def forward(self, x):
-                outputs = self.model(x)
-                if outputs is None or len(outputs) < 2:
-                    raise ValueError("Model did not return expected outputs (root_logits, subroot_logits).")
-                return outputs[1]  # Ensure subroot_logits is returned
-                
+                root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
+                root_pred = torch.argmax(root_logits, dim=1)
+                subroot_logits = torch.zeros_like(root_logits)
+                animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
+                vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
+
+                is_animal = root_pred.unsqueeze(1) == animal_classes_index
+                is_animal = is_animal.any(dim=1)
+
+                is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
+                is_vehicle = is_vehicle.any(dim=1)
+
+                # Fix for animal subroot logits
+                if is_animal.any():
+                    animal_rows = is_animal.nonzero(as_tuple=True)[0]
+                    subroot_logits[animal_rows[:, None], animal_classes_index] = subroot_animal_logits[:, :-1]
+                    unknown_value = subroot_animal_logits[:, -1] / len(vehicle_classes)
+                    subroot_logits[animal_rows[:, None], vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
+
+                # Fix for vehicle subroot logits
+                if is_vehicle.any():
+                    vehicle_rows = is_vehicle.nonzero(as_tuple=True)[0]
+                    subroot_logits[vehicle_rows[:, None], vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
+                    unknown_value = subroot_vehicle_logits[:, -1] / len(animal_classes)
+                    subroot_logits[vehicle_rows[:, None], animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
+
+                return subroot_logits
+            
             def __call__(self, x):
                 return self.forward(x)
         
@@ -178,8 +202,34 @@ class TreeEnsemble(object):
             return self.alpha1, self.alpha2, self.alpha3
 
     def forward(self, x):
-        root_logits, subroot_logits = self.model(x)
-        return root_logits, subroot_logits
+        root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
+        root_pred = torch.argmax(root_logits, dim=1)
+
+        subroot_logits = torch.zeros_like(root_logits)
+        animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
+        vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
+
+        is_animal = root_pred.unsqueeze(1) == animal_classes_index
+        is_animal = is_animal.any(dim=1)
+
+        is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
+        is_vehicle = is_vehicle.any(dim=1)
+
+        # Fix for animal subroot logits
+        if is_animal.any():
+            animal_rows = is_animal.nonzero(as_tuple=True)[0]
+            subroot_logits[animal_rows[:, None], animal_classes_index] = subroot_animal_logits[:, :-1]
+            unknown_value = subroot_animal_logits[:, -1] / len(vehicle_classes)
+            subroot_logits[animal_rows[:, None], vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
+
+        # Fix for vehicle subroot logits
+        if is_vehicle.any():
+            vehicle_rows = is_vehicle.nonzero(as_tuple=True)[0]
+            subroot_logits[vehicle_rows[:, None], vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
+            unknown_value = subroot_vehicle_logits[:, -1] / len(animal_classes)
+            subroot_logits[vehicle_rows[:, None], animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
+
+        return subroot_logits
 
     def train(self, dataloader, epoch=0, adversarial=False, verbose=True):
         """
@@ -219,7 +269,7 @@ class TreeEnsemble(object):
         """
         Loss function for the model.
         """
-        root_logits, subroot_logits = logits_set
+        root_logits, subroot_logits_animal, subroot_logits_vehicle = logits_set #10dim, 7dim, 5dim 
       
         root_loss = self.root_trainer.criterion(
             root_logits, 
@@ -235,10 +285,23 @@ class TreeEnsemble(object):
         is_animal = torch.isin(y, animal_classes_index)
         is_vehicle = torch.isin(y, vehicle_classes_index)
 
+        logits_animal = torch.zeros_like(root_logits)
+        logits_vehicle = torch.zeros_like(root_logits)
+        logits_animal[:, animal_classes_index] = subroot_logits_animal[:, :-1]
+        logits_animal[:, vehicle_classes_index] = subroot_logits_animal[:, -1] / len(vehicle_classes)
+        logits_vehicle[:, animal_classes_index] = subroot_logits_vehicle[:, -1] / len(animal_classes)
+        logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle[:, :-1]
+
+            # animal_rows = is_animal.nonzero(as_tuple=True)[0]
+            # subroot_animal_logits = self.subroot_animal(root_features[animal_rows])
+            # subroot_logits[animal_rows[:, None], animal_classes_index] = subroot_animal_logits[:, :-1]
+            # unknown_value = subroot_animal_logits[:, -1] / len(vehicle_classes)
+            # subroot_logits[animal_rows[:, None], vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
+
         if is_animal.any():
-            subroot_loss_animal = self.animal_trainer.criterion(subroot_logits[is_animal], y[is_animal])
+            subroot_loss_animal = self.animal_trainer.criterion(logits_animal[is_animal], y[is_animal])
         if is_vehicle.any():
-            subroot_loss_vehicle = self.vehicle_trainer.criterion(subroot_logits[is_vehicle], y[is_vehicle])
+            subroot_loss_vehicle = self.vehicle_trainer.criterion(logits_vehicle[is_vehicle], y[is_vehicle])
 
         loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
@@ -249,10 +312,10 @@ class TreeEnsemble(object):
         Standard training.
         """
         self.optimizer.zero_grad()
-        root_logits, subroot_logits = self.model(x)
-        preds = subroot_logits.detach()
+        root_logits, subroot_animal, subroot_veicle = self.model(x)
+        preds = self(x).detach()
 
-        loss = self.loss_fn([root_logits, subroot_logits], y)
+        loss = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y)
         batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
         return loss, batch_metrics
 
@@ -271,10 +334,10 @@ class TreeEnsemble(object):
         else:
             y_adv = y
 
-        root_logits, subroot_logits = self.model(x_adv)
-        preds = subroot_logits.detach()
+        root_logits, subroot_animal, subroot_veicle = self.model(x_adv)
+        preds = self(x).detach()
 
-        loss = self.loss_fn([root_logits, subroot_logits], y_adv)
+        loss = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y_adv)
         
         batch_metrics = {'loss': loss.item()}
         if self.params.keep_clean:
@@ -318,10 +381,10 @@ class TreeEnsemble(object):
             if adversarial:
                 with ctx_noparamgrad_and_eval(self.model):
                     x_adv, _ = self.eval_attack.perturb(x, y)            
-                root_out, out = self.model(x_adv)
+                root_out, subroot_animal, subroot_veicle = self.model(x_adv)
             else:
-                root_out, out = self.model(x)
-
+                root_out, subroot_animal, subroot_veicle = self.model(x)
+            out = self(x).detach()
             acc += accuracy(y, out)
             temp_acc_animal, temp_acc_vehicle = subclass_accuracy(y, out)
             acc_animal += temp_acc_animal

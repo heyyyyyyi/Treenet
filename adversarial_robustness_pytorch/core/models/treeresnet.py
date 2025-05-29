@@ -211,35 +211,9 @@ class LightTreeResNet(nn.Module):
 
     def forward(self, x):
         root_logits, root_features = self.root_model(x)
-        root_pred = torch.argmax(root_logits, dim=1)
-
-        subroot_logits = torch.zeros_like(root_logits)
-        animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
-        vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
-
-        is_animal = root_pred.unsqueeze(1) == animal_classes_index
-        is_animal = is_animal.any(dim=1)
-
-        is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
-        is_vehicle = is_vehicle.any(dim=1)
-
-        # Fix for animal subroot logits
-        if is_animal.any():
-            animal_rows = is_animal.nonzero(as_tuple=True)[0]
-            subroot_animal_logits = self.subroot_animal(root_features[animal_rows])
-            subroot_logits[animal_rows[:, None], animal_classes_index] = subroot_animal_logits[:, :-1]
-            unknown_value = subroot_animal_logits[:, -1] / len(vehicle_classes)
-            subroot_logits[animal_rows[:, None], vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
-
-        # Fix for vehicle subroot logits
-        if is_vehicle.any():
-            vehicle_rows = is_vehicle.nonzero(as_tuple=True)[0]
-            subroot_vehicle_logits = self.subroot_vehicle(root_features[vehicle_rows])
-            subroot_logits[vehicle_rows[:, None], vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
-            unknown_value = subroot_vehicle_logits[:, -1] / len(animal_classes)
-            subroot_logits[vehicle_rows[:, None], animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
-            
-        return root_logits, subroot_logits
+        subroot_logits_animal = self.subroot_animal(root_features)
+        subroot_logits_vehicle = self.subroot_vehicle(root_features)
+        return root_logits, subroot_logits_animal, subroot_logits_vehicle
 
 def LightTreeResNet20(name, num_classes=10, pretrained=False, device='cpu'):
     if name == 'lighttreeresnet20':
