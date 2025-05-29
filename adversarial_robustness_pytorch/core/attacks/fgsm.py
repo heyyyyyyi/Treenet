@@ -4,6 +4,7 @@ import torch.nn as nn
 from .base import Attack, LabelMixin
 from .utils import batch_multiply
 from .utils import clamp 
+from .utils import normalize_by_pnorm
 
 
 class FGSMAttack(Attack, LabelMixin):

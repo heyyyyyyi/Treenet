@@ -76,7 +76,6 @@ class TreeEnsemble(object):
     
     @staticmethod
     def init_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step):
-        attack = create_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
         class wrapper(object):
             def __init__(self, model):
                 self.model = model
@@ -91,6 +90,14 @@ class TreeEnsemble(object):
                 return self.forward(x)
         
         wrapper_model = wrapper(model)
+
+        # Initialize attack
+        if attack_type in ['linf-df', 'l2-df']:
+            attack = create_attack(wrapper_model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
+        else:
+            attack = create_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
+        
+        # Initialize evaluation attack
         criterion = nn.CrossEntropyLoss()
 
         if attack_type in ['linf-pgd', 'l2-pgd']:
@@ -213,10 +220,7 @@ class TreeEnsemble(object):
         Loss function for the model.
         """
         root_logits, subroot_logits = logits_set
-        #print(len(logits_set), len(root_logits), len(subroot_logits), len(y))
-        #preds = torch.argmax(subroot_logits, 1)
-
-        #root_loss = self.root_trainer.criterion(root_logits, y)
+      
         root_loss = self.root_trainer.criterion(
             root_logits, 
             torch.isin(y, torch.tensor(animal_classes, device=y.device)).long()
