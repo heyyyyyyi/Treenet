@@ -29,7 +29,7 @@ from core.utils import seed
 import wandb
 
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
-_WANDB_PROJECT = "ADV-light20"
+_WANDB_PROJECT = "test"
 
 
 # Setup
@@ -119,8 +119,8 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     root_acc_bi = test_res['root_acc_bi']
     acc_animal = test_res['acc_animal']
     acc_vehicle = test_res['acc_vehicle']
-    root_acc_animal = test_res['root_acc_animal']
-    root_acc_vehicle = test_res['root_acc_vehicle']
+    # root_acc_animal = test_res['root_acc_animal']
+    # root_acc_vehicle = test_res['root_acc_vehicle']
 
     alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, root_acc)
 
@@ -141,13 +141,15 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         'lr_subroot_animal': subroot_animal_lr,
         'lr_subroot_vehicle': subroot_vehicle_lr,
         'test_clean_acc': test_acc,
+        'test_clean_acc_bi': root_acc_bi,
         'test_clean_root_acc': root_acc,
-        'test_clean_root_acc_bi': root_acc_bi,
         'test_clean_acc_animal': acc_animal,
         'test_clean_acc_vehicle': acc_vehicle,
         'test_adversarial_acc': None,
         'test_adversarial_acc_animal': None,
         'test_adversarial_acc_vehicle': None,
+        'test_adversarial_root_acc': None,
+        'test_adversarial_acc_bi': None,
     })
     
     if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
@@ -163,8 +165,8 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
                                                                                    test_adv_acc*100))
         epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
-        # epoch_metrics.update({'test_adversarial_root_acc': test_adv_root_acc})
-        # epoch_metrics.update({'test_adversarial_root_acc_bi': test_adv_root_acc_bi})
+        epoch_metrics.update({'test_adversarial_root_acc': test_adv_root_acc})
+        epoch_metrics.update({'test_adversarial_acc_bi': test_adv_root_acc_bi})
         epoch_metrics.update({'test_adversarial_acc_animal': test_adv_acc_animal})
         epoch_metrics.update({'test_adversarial_acc_vehicle': test_adv_acc_vehicle})
         # epoch_metrics.update({'test_adversarial_root_acc_animal': test_adv_root_acc_animal})

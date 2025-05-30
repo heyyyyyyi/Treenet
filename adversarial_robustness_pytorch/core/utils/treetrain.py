@@ -84,6 +84,7 @@ class TreeEnsemble(object):
             def forward(self, x):
                 root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
                 root_pred = torch.argmax(root_logits, dim=1)
+
                 subroot_logits = torch.zeros_like(root_logits)
                 animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
                 vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
@@ -96,17 +97,9 @@ class TreeEnsemble(object):
 
                 # Fix for animal subroot logits
                 if is_animal.any():
-                    animal_rows = is_animal.nonzero(as_tuple=True)[0]
-                    subroot_logits[animal_rows[:, None], animal_classes_index] = subroot_animal_logits[:, :-1]
-                    unknown_value = subroot_animal_logits[:, -1] / len(vehicle_classes)
-                    subroot_logits[animal_rows[:, None], vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
-
-                # Fix for vehicle subroot logits
+                    subroot_logits[is_animal] = subroot_animal_logits[is_animal]
                 if is_vehicle.any():
-                    vehicle_rows = is_vehicle.nonzero(as_tuple=True)[0]
-                    subroot_logits[vehicle_rows[:, None], vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
-                    unknown_value = subroot_vehicle_logits[:, -1] / len(animal_classes)
-                    subroot_logits[vehicle_rows[:, None], animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
+                    subroot_logits[is_vehicle] = subroot_vehicle_logits[is_vehicle]
 
                 return subroot_logits
             
@@ -203,6 +196,7 @@ class TreeEnsemble(object):
 
     def forward(self, x):
         root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
+
         root_pred = torch.argmax(root_logits, dim=1)
 
         subroot_logits = torch.zeros_like(root_logits)
@@ -217,17 +211,9 @@ class TreeEnsemble(object):
 
         # Fix for animal subroot logits
         if is_animal.any():
-            animal_rows = is_animal.nonzero(as_tuple=True)[0]
-            subroot_logits[animal_rows[:, None], animal_classes_index] = subroot_animal_logits[:, :-1]
-            unknown_value = subroot_animal_logits[:, -1] / len(vehicle_classes)
-            subroot_logits[animal_rows[:, None], vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
-
-        # Fix for vehicle subroot logits
+            subroot_logits[is_animal] = subroot_animal_logits[is_animal]
         if is_vehicle.any():
-            vehicle_rows = is_vehicle.nonzero(as_tuple=True)[0]
-            subroot_logits[vehicle_rows[:, None], vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
-            unknown_value = subroot_vehicle_logits[:, -1] / len(animal_classes)
-            subroot_logits[vehicle_rows[:, None], animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
+            subroot_logits[is_vehicle] = subroot_vehicle_logits[is_vehicle]
 
         return subroot_logits
 
@@ -269,12 +255,9 @@ class TreeEnsemble(object):
         """
         Loss function for the model.
         """
-        root_logits, subroot_logits_animal, subroot_logits_vehicle = logits_set #10dim, 7dim, 5dim 
+        root_logits, logits_animal, logits_vehicle = logits_set #10dim, 10dim, 10dim 
       
-        root_loss = self.root_trainer.criterion(
-            root_logits, 
-            torch.isin(y, torch.tensor(animal_classes, device=y.device)).long()
-        )
+        root_loss = self.root_trainer.criterion(root_logits, y)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -284,20 +267,7 @@ class TreeEnsemble(object):
 
         is_animal = torch.isin(y, animal_classes_index)
         is_vehicle = torch.isin(y, vehicle_classes_index)
-
-        logits_animal = torch.zeros_like(root_logits)
-        logits_vehicle = torch.zeros_like(root_logits)
-        logits_animal[:, animal_classes_index] = subroot_logits_animal[:, :-1]
-        logits_animal[:, vehicle_classes_index] = subroot_logits_animal[:, -1] / len(vehicle_classes)
-        logits_vehicle[:, animal_classes_index] = subroot_logits_vehicle[:, -1] / len(animal_classes)
-        logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle[:, :-1]
-
-            # animal_rows = is_animal.nonzero(as_tuple=True)[0]
-            # subroot_animal_logits = self.subroot_animal(root_features[animal_rows])
-            # subroot_logits[animal_rows[:, None], animal_classes_index] = subroot_animal_logits[:, :-1]
-            # unknown_value = subroot_animal_logits[:, -1] / len(vehicle_classes)
-            # subroot_logits[animal_rows[:, None], vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
-
+       
         if is_animal.any():
             subroot_loss_animal = self.animal_trainer.criterion(logits_animal[is_animal], y[is_animal])
         if is_vehicle.any():
@@ -313,7 +283,7 @@ class TreeEnsemble(object):
         """
         self.optimizer.zero_grad()
         root_logits, subroot_animal, subroot_veicle = self.model(x)
-        preds = self(x).detach()
+        preds = self.forward(x).detach()
 
         loss = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y)
         batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
@@ -335,7 +305,7 @@ class TreeEnsemble(object):
             y_adv = y
 
         root_logits, subroot_animal, subroot_veicle = self.model(x_adv)
-        preds = self(x).detach()
+        preds = self.forward(x).detach()
 
         loss = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y_adv)
         
@@ -384,7 +354,8 @@ class TreeEnsemble(object):
                 root_out, subroot_animal, subroot_veicle = self.model(x_adv)
             else:
                 root_out, subroot_animal, subroot_veicle = self.model(x)
-            out = self(x).detach()
+
+            out = self.forward(x).detach()
             acc += accuracy(y, out)
             temp_acc_animal, temp_acc_vehicle = subclass_accuracy(y, out)
             acc_animal += temp_acc_animal

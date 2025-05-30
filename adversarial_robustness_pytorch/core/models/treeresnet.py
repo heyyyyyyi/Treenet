@@ -213,7 +213,23 @@ class LightTreeResNet(nn.Module):
         root_logits, root_features = self.root_model(x)
         subroot_logits_animal = self.subroot_animal(root_features)
         subroot_logits_vehicle = self.subroot_vehicle(root_features)
-        return root_logits, subroot_logits_animal, subroot_logits_vehicle
+
+        logits_animal = torch.zeros_like(root_logits)
+        logits_vehicle = torch.zeros_like(root_logits)
+
+        animal_classes_index = torch.tensor(animal_classes)
+        vehicle_classes_index = torch.tensor(vehicle_classes)
+
+        logits_animal[:, animal_classes_index] = subroot_logits_animal[:, :-1]
+        unknown_value = subroot_logits_animal[:, -1] / len(vehicle_classes)
+        logits_animal[:, vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
+
+        logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle[:, :-1]
+        unknown_value = subroot_logits_vehicle[:, -1] / len(animal_classes)
+        logits_vehicle[:, animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
+
+
+        return root_logits, logits_animal, logits_vehicle
 
 def LightTreeResNet20(name, num_classes=10, pretrained=False, device='cpu'):
     if name == 'lighttreeresnet20':

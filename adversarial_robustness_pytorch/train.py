@@ -27,7 +27,7 @@ from core import animal_classes, vehicle_classes
 import wandb
 
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
-_WANDB_PROJECT = "baseline-adv-resnet20"
+_WANDB_PROJECT = "test"
 
 
 # Setup
@@ -72,7 +72,7 @@ torch.backends.cudnn.benchmark = True
 seed(args.seed)
 train_dataset, test_dataset, train_dataloader, test_dataloader = load_data(
     DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, use_augmentation=args.augment, shuffle_train=True, 
-    aux_data_filename=args.aux_data_filename, unsup_fraction=args.unsup_fraction, filter_classes=vehicle_classes
+    aux_data_filename=args.aux_data_filename, unsup_fraction=args.unsup_fraction, filter_classes=animal_classes
 )
 del train_dataset, test_dataset
 
@@ -88,7 +88,11 @@ info['num_classes'] = 4 # for vehicle
 print(train_dataloader.dataset.data.shape)
 print(test_dataloader.dataset.data.shape)
 
-#checkpoint()
+# print unique labels in train and test datasets
+# print('Unique labels in train dataset:', np.unique(train_dataloader.dataset.targets))
+# print('Unique labels in test dataset:', np.unique(test_dataloader.dataset.targets))
+
+checkpoint()
 
 trainer = Trainer(info, args)
 last_lr = args.lr
