@@ -1,4 +1,3 @@
-from .train import Trainer
 from core import animal_classes, vehicle_classes
 import numpy as np
 import pandas as pd
@@ -36,10 +35,6 @@ class TreeEnsemble(object):
     ):
         
         self.model = self.create_tree_model(info, args, device)
-
-        self.root_trainer = Trainer( info, args, self.model.root_model)
-        self.animal_trainer = Trainer( info, args, self.model.subroot_animal)
-        self.vehicle_trainer = Trainer( info, args, self.model.subroot_vehicle)
         
         self.alpha1 = alpha1
         self.alpha2 = alpha2
@@ -51,6 +46,8 @@ class TreeEnsemble(object):
         }
 
         self.params = args
+        self.criterion = nn.CrossEntropyLoss()
+
         self.init_optimizer(self.params.num_adv_epochs)
         if self.params.pretrained_file is not None:
             self.load_model(os.path.join(self.params.log_dir, self.params.pretrained_file, 'weights-best.pt'))
@@ -76,54 +73,70 @@ class TreeEnsemble(object):
     
     @staticmethod
     def init_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step):
-        
-        class wrapper(object):
-            def __init__(self, model):
-                self.model = model
-
-            def forward(self, x):
-                root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
-                root_pred = torch.argmax(root_logits, dim=1)
-
-                subroot_logits = torch.zeros_like(root_logits)
-                animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
-                vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
-
-                is_animal = root_pred.unsqueeze(1) == animal_classes_index
-                is_animal = is_animal.any(dim=1)
-
-                is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
-                is_vehicle = is_vehicle.any(dim=1)
-
-                # Fix for animal subroot logits
-                if is_animal.any():
-                    subroot_logits[is_animal] = subroot_animal_logits[is_animal]
-                if is_vehicle.any():
-                    subroot_logits[is_vehicle] = subroot_vehicle_logits[is_vehicle]
-
-                return subroot_logits
-            
-            def __call__(self, x):
-                return self.forward(x)
-        
-        wrapper_model = wrapper(model)
-
-        # Initialize attack
-        if attack_type in ['linf-df', 'l2-df']:
-            attack = create_attack(wrapper_model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
-        else:
-            attack = create_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
-        
-        # Initialize evaluation attack
-        criterion = nn.CrossEntropyLoss()
-
+        """
+        Initialize adversary.
+        """
+        attack = create_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
         if attack_type in ['linf-pgd', 'l2-pgd']:
-            eval_attack = create_attack(wrapper_model, criterion, attack_type, attack_eps, 2*attack_iter, attack_step)
+            eval_attack = create_attack(model, criterion, attack_type, attack_eps, 2*attack_iter, attack_step)
         elif attack_type in ['fgsm', 'linf-df']:
-            eval_attack = create_attack(wrapper_model, criterion, 'linf-pgd', 8/255, 20, 2/255)
+            eval_attack = create_attack(model, criterion, 'linf-pgd', 8/255, 20, 2/255)
         elif attack_type in ['fgm', 'l2-df']:
-            eval_attack = create_attack(wrapper_model, criterion, 'l2-pgd', 128/255, 20, 15/255)
-        return attack, eval_attack
+            eval_attack = create_attack(model, criterion, 'l2-pgd', 128/255, 20, 15/255)
+        return attack,  eval_attack
+    
+    # @staticmethod
+    # def init_attack(model, tree_criterion, attack_type, attack_eps, attack_iter, attack_step):
+        
+    #     class wrapper(object):
+    #         def __init__(self, model):
+    #             self.model = model
+
+    #         def forward(self, x):
+    #             root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
+    #             root_pred = torch.argmax(root_logits, dim=1)
+
+    #             subroot_logits = torch.zeros_like(root_logits)
+    #             animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
+    #             vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
+
+    #             is_animal = root_pred.unsqueeze(1) == animal_classes_index
+    #             is_animal = is_animal.any(dim=1)
+
+    #             is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
+    #             is_vehicle = is_vehicle.any(dim=1)
+
+    #             # Fix for animal subroot logits
+    #             if is_animal.any():
+    #                 subroot_logits[is_animal] = subroot_animal_logits[is_animal]
+
+    #             if is_vehicle.any():
+    #                 subroot_logits[is_vehicle] = subroot_vehicle_logits[is_vehicle]
+
+    #             return subroot_logits
+            
+    #         def __call__(self, x):
+    #             return self.forward(x)
+        
+    #     wrapper_model = wrapper(model)
+    #     criterion = nn.CrossEntropyLoss()
+
+    #     # Initialize attack
+    #     if attack_type in ['linf-df', 'l2-df']:
+    #         attack = create_attack(wrapper_model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
+    #     else:
+    #         attack = create_attack(model, tree_criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
+        
+    #     # Initialize evaluation attack
+        
+
+    #     if attack_type in ['linf-pgd', 'l2-pgd']:
+    #         eval_attack = create_attack(wrapper_model, criterion, attack_type, attack_eps, 2*attack_iter, attack_step)
+    #     elif attack_type in ['fgsm', 'linf-df']:
+    #         eval_attack = create_attack(wrapper_model, criterion, 'linf-pgd', 8/255, 20, 2/255)
+    #     elif attack_type in ['fgm', 'l2-df']:
+    #         eval_attack = create_attack(wrapper_model, criterion, 'l2-pgd', 128/255, 20, 15/255)
+    #     return attack, eval_attack
         
     def init_optimizer(self, num_epochs):
         """
@@ -209,6 +222,7 @@ class TreeEnsemble(object):
         is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
         is_vehicle = is_vehicle.any(dim=1)
 
+
         # Fix for animal subroot logits
         if is_animal.any():
             subroot_logits[is_animal] = subroot_animal_logits[is_animal]
@@ -223,6 +237,8 @@ class TreeEnsemble(object):
         """
         
         metrics = pd.DataFrame()  # Initialize metrics
+        self.model.train()
+
         for data in tqdm(dataloader, desc='Epoch {}: '.format(epoch), disable=not verbose):
             x, y = data
             x, y = x.to(device), y.to(device)
@@ -240,7 +256,6 @@ class TreeEnsemble(object):
 
             if self.params.clip_grad:
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.params.clip_grad)
-            
             self.optimizer.step()
             if self.params.scheduler in ['cyclic']:
                 self.scheduler.step()
@@ -257,7 +272,7 @@ class TreeEnsemble(object):
         """
         root_logits, logits_animal, logits_vehicle = logits_set #10dim, 10dim, 10dim 
       
-        root_loss = self.root_trainer.criterion(root_logits, y)
+        root_loss = self.criterion(root_logits, y)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -267,11 +282,11 @@ class TreeEnsemble(object):
 
         is_animal = torch.isin(y, animal_classes_index)
         is_vehicle = torch.isin(y, vehicle_classes_index)
-       
+
         if is_animal.any():
-            subroot_loss_animal = self.animal_trainer.criterion(logits_animal[is_animal], y[is_animal])
+            subroot_loss_animal = self.criterion(logits_animal[is_animal], y[is_animal])
         if is_vehicle.any():
-            subroot_loss_vehicle = self.vehicle_trainer.criterion(logits_vehicle[is_vehicle], y[is_vehicle])
+            subroot_loss_vehicle = self.criterion(logits_vehicle[is_vehicle], y[is_vehicle])
 
         loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
@@ -282,10 +297,11 @@ class TreeEnsemble(object):
         Standard training.
         """
         self.optimizer.zero_grad()
+        out = self.forward(x)
         root_logits, subroot_animal, subroot_veicle = self.model(x)
-        preds = self.forward(x).detach()
-
         loss = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y)
+        
+        preds = out.detach()
         batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
         return loss, batch_metrics
 
@@ -303,12 +319,11 @@ class TreeEnsemble(object):
             y_adv = torch.cat((y, y), dim=0)
         else:
             y_adv = y
-
+        out = self.forward(x_adv)
         root_logits, subroot_animal, subroot_veicle = self.model(x_adv)
-        preds = self.forward(x).detach()
-
         loss = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y_adv)
         
+        preds = out.detach()
         batch_metrics = {'loss': loss.item()}
         if self.params.keep_clean:
             preds_clean, preds_adv = preds[:len(x)], preds[len(x):]
@@ -355,7 +370,7 @@ class TreeEnsemble(object):
             else:
                 root_out, subroot_animal, subroot_veicle = self.model(x)
 
-            out = self.forward(x).detach()
+            out = self.forward(x)
             acc += accuracy(y, out)
             temp_acc_animal, temp_acc_vehicle = subclass_accuracy(y, out)
             acc_animal += temp_acc_animal

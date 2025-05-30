@@ -33,13 +33,10 @@ class Trainer(object):
         info (dict): dataset information.
         args (dict): input arguments.
     """
-    def __init__(self, info, args, tree_model=False):
+    def __init__(self, info, args):
         super(Trainer, self).__init__()
         seed(args.seed)
-        if not tree_model:
-            self.model = create_model(args.model, args.normalize, info, device)
-        else: # suite trainer for tree 
-            self.model = tree_model
+        self.model = create_model(args.model, args.normalize, info, device)
             
         self.params = args
         self.criterion = nn.CrossEntropyLoss()
