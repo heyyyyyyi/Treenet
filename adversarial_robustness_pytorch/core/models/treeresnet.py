@@ -231,13 +231,6 @@ class LightTreeResNet(nn.Module):
 
         return root_logits, logits_animal, logits_vehicle
 
-def LightTreeResNet20(name, num_classes=10, pretrained=False, device='cpu'):
-    if name == 'lighttreeresnet20':
-       return LightTreeResNet(BasicBlock, [2, 1], [1, 1], 
-            num_classes=num_classes,
-            device=device)
-    raise ValueError('Only resnet18, resnet34, resnet50 and resnet101 are supported!')
-    return
 
 def lighttreeresnet(name, num_classes=2, pretrained=False, device='cpu'):
     """
@@ -253,7 +246,7 @@ def lighttreeresnet(name, num_classes=2, pretrained=False, device='cpu'):
         return LightTreeResNet(
             BasicBlock, 
             root_num_blocks=[2, 1], 
-            subroot_num_blocks=[1, 2], 
+            subroot_num_blocks=[1, 1], 
             num_classes=num_classes, 
             device=device
         )
