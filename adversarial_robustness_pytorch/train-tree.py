@@ -84,6 +84,19 @@ del train_dataset, test_dataset
 
 seed(args.seed)
 trainer = TreeEnsemble(info, args)
+
+logger.log("Model Summary:")
+# try:
+#     from torchsummary import summary
+#     summary(trainer, input_size=(3, 32, 32), device=str(device))
+# except ImportError:
+#     logger.log("torchsummary not installed. Skipping detailed summary.")
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+logger.log("Total Trainable Parameters: {}".format(count_parameters(trainer.model)))
+
 last_lr = args.lr
 
 

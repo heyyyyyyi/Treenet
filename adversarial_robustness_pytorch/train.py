@@ -72,7 +72,8 @@ torch.backends.cudnn.benchmark = True
 seed(args.seed)
 train_dataset, test_dataset, train_dataloader, test_dataloader = load_data(
     DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, use_augmentation=args.augment, shuffle_train=True, 
-    aux_data_filename=args.aux_data_filename, unsup_fraction=args.unsup_fraction, filter_classes=animal_classes
+    aux_data_filename=args.aux_data_filename, unsup_fraction=args.unsup_fraction, 
+    # binary_classes=animal_classes #, filter_classes=animal_classes
 )
 del train_dataset, test_dataset
 
@@ -82,19 +83,25 @@ del train_dataset, test_dataset
 
 seed(args.seed)
 
-# info['num_classes'] = 6 # for animal
-info['num_classes'] = 4 # for vehicle
-# info['num_classes'] = 2 # for binary
 print(train_dataloader.dataset.data.shape)
 print(test_dataloader.dataset.data.shape)
 
-# print unique labels in train and test datasets
-# print('Unique labels in train dataset:', np.unique(train_dataloader.dataset.targets))
-# print('Unique labels in test dataset:', np.unique(test_dataloader.dataset.targets))
-
-checkpoint()
 
 trainer = Trainer(info, args)
+
+logger.log("Model Summary:")
+try:
+    from torchsummary import summary
+    summary(trainer.model, input_size=(3, 32, 32), device=str(device))
+except ImportError:
+    logger.log("torchsummary not installed. Skipping detailed summary.")
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+logger.log("Total Trainable Parameters: {}".format(count_parameters(trainer.model)))
+
+
 last_lr = args.lr
 
 
@@ -119,9 +126,9 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     res = trainer.train(train_dataloader, epoch=epoch, adversarial=True)
     test_res = trainer.eval(test_dataloader)
     test_acc = test_res['acc']
-    # acc_animal = test_res['acc_animal'] 
-    # acc_vehicle = test_res['acc_vehicle'] 
-    # acc_bi = test_res['acc_bi']
+    acc_animal = test_res['acc_animal'] 
+    acc_vehicle = test_res['acc_vehicle'] 
+    acc_bi = test_res['acc_bi']
 
     logger.log('Loss: {:.4f}.\tLR: {:.4f}'.format(res['loss'], last_lr))
     if 'clean_acc' in res:
@@ -132,29 +139,29 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     epoch_metrics.update({
         'epoch': epoch, 
         'lr': last_lr, 
-        # 'test_clean_acc': test_acc,
-        # 'test_clean_acc_animal': test_acc,
-        'test_clean_acc_vehicle': test_acc,
-        #'test_clean_acc_bi': test_acc,
-        # 'test_adversarial_acc': None,
-        # 'test_acversarial_acc_animal': None,
+        'test_clean_acc': test_acc,
+        'test_clean_acc_animal': acc_animal,
+        'test_clean_acc_vehicle': acc_vehicle,
+        'test_clean_acc_bi': acc_bi,
+        'test_adversarial_acc': None,
+        'test_acversarial_acc_animal': None,
         'test_adversarial_acc_vehicle': None,
-        #'test_adversarial_acc_bi': None
+        'test_adversarial_acc_bi': None
         })
     
     if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
         test_adv_res = trainer.eval(test_dataloader, adversarial=True)
-        # test_adv_acc = test_adv_res['acc']
-        # test_adv_acc_animal = test_adv_res['acc']
-        test_adv_acc_vehicle = test_adv_res['acc']
-        #test_adv_acc_bi = test_adv_res['acc']
+        test_adv_acc = test_adv_res['acc']
+        test_adv_acc_animal = test_adv_res['acc_animal']
+        test_adv_acc_vehicle = test_adv_res['acc_vehicle']
+        test_adv_acc_bi = test_adv_res['acc_bi']
         
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
                                                                                    test_adv_acc*100))
-        # epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
-        # epoch_metrics.update({'test_adversarial_acc_animal': test_adv_acc_animal})
+        epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
+        epoch_metrics.update({'test_adversarial_acc_animal': test_adv_acc_animal})
         epoch_metrics.update({'test_adversarial_acc_vehicle': test_adv_acc_vehicle})
-        # epoch_metrics.update({'test_adversarial_acc_bi': test_adv_acc_bi})
+        epoch_metrics.update({'test_adversarial_acc_bi': test_adv_acc_bi})
     else:
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
     
