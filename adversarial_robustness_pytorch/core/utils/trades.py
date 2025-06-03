@@ -89,7 +89,7 @@ def trades_loss(model, x_natural, y, optimizer, step_size=0.003, epsilon=0.031, 
     return loss, batch_metrics
 
 
-def trades_tree_loss(model, tree_KL_loss, loss_fn, x_natural, y, optimizer, step_size=0.003, epsilon=0.031, perturb_steps=10, beta=1.0,
+def trades_tree_loss(model, predict, tree_KL_loss, loss_fn, x_natural, y, optimizer, step_size=0.003, epsilon=0.031, perturb_steps=10, beta=1.0,
                      attack='linf-pgd'):
     """
     TRADES training for tree ensembles.
@@ -153,7 +153,10 @@ def trades_tree_loss(model, tree_KL_loss, loss_fn, x_natural, y, optimizer, step
     loss_natural = loss_fn(logits_natural, y)
     loss_robust = (1.0 / batch_size) * tree_KL_loss(logits_adv, logits_natural, y)
     loss = loss_natural + beta * loss_robust
-    batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, logits_natural.detach()),
-                     'adversarial_acc': accuracy(y, logits_adv.detach())}
+    
+    out_natural = predict(logits_natural)
+    out_adv = predict(logits_adv)
+    batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, out_natural.detach()),
+                     'adversarial_acc': accuracy(y, out_adv.detach())}
     return loss, batch_metrics
 

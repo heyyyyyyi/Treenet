@@ -216,12 +216,13 @@ class TreeEnsemble(object):
         animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
         vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
 
-        is_animal = root_pred.unsqueeze(1) == animal_classes_index
-        is_animal = is_animal.any(dim=1)
+        # is_animal = root_pred.unsqueeze(1) == animal_classes_index
+        # is_animal = is_animal.any(dim=1)
 
-        is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
-        is_vehicle = is_vehicle.any(dim=1)
-
+        # is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
+        # is_vehicle = is_vehicle.any(dim=1)
+        is_animal = torch.isin(root_pred, animal_classes_index)
+        is_vehicle = torch.isin(root_pred, vehicle_classes_index)
 
         # Fix for animal subroot logits
         if is_animal.any():
@@ -368,7 +369,7 @@ class TreeEnsemble(object):
         # loss, batch_metrics = trades_loss(self.model, x, y, self.optimizer, step_size=self.params.attack_step, 
         #                                   epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
         #                                   beta=beta, attack=self.params.attack)
-        loss, batch_metrics = trades_tree_loss(self.model, self.KL_loss_fn, self.loss_fn, x, y, self.optimizer,
+        loss, batch_metrics = trades_tree_loss(self.model, self.forward, self.KL_loss_fn, self.loss_fn, x, y, self.optimizer,
                                                   step_size=self.params.attack_step, 
                                                   epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
                                                   beta=beta, attack=self.params.attack)
