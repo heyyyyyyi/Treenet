@@ -42,7 +42,8 @@ class TreeEnsemble(object):
 
         self.max_epochs = max_epochs
         self.alpha_update_strategy = alpha_update_strategy or {
-            "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
+            #"balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
+            "balance_ratio": 1 / 1,
         }
 
         self.params = args
@@ -216,11 +217,6 @@ class TreeEnsemble(object):
         animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
         vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
 
-        # is_animal = root_pred.unsqueeze(1) == animal_classes_index
-        # is_animal = is_animal.any(dim=1)
-
-        # is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
-        # is_vehicle = is_vehicle.any(dim=1)
         is_animal = torch.isin(root_pred, animal_classes_index)
         is_vehicle = torch.isin(root_pred, vehicle_classes_index)
 
@@ -241,6 +237,7 @@ class TreeEnsemble(object):
         self.model.train()
 
         for data in tqdm(dataloader, desc='Epoch {}: '.format(epoch), disable=not verbose):
+            # each batch
             x, y = data
             x, y = x.to(device), y.to(device)
 
@@ -270,6 +267,7 @@ class TreeEnsemble(object):
     def loss_fn(self, logits_set, y):
         """
         Loss function for the model.
+        nn.CrossEntropyLoss(reduction='mean'), no need to divide by batch size.
         """
         root_logits, logits_animal, logits_vehicle = logits_set #10dim, 10dim, 10dim 
       
@@ -295,14 +293,15 @@ class TreeEnsemble(object):
     
     def KL_loss_fn(self, adv_logits_set, logits_set, y):
         """
-        KL Loss function for tree model.
+        KL Loss function for tree model. In trades loss calculation.
+        nn.KLDivLoss(reduction='sum') used not divided by batch size.
         """
         criterion = nn.KLDivLoss(reduction='sum')
 
         adv_root_logits, adv_logits_animal, adv_logits_vehicle = adv_logits_set #10dim, 10dim, 10dim
         root_logits, logits_animal, logits_vehicle = logits_set #10dim, 10dim, 10dim 
       
-        root_loss = criterion(F.log_softmax(adv_root_logits, dim=1), F.softmax(root_logits, dim=1))
+        root_loss = criterion(F.log_softmax(adv_root_logits, dim=1), F.softmax(root_logits, dim=1)) / len(y)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -314,13 +313,77 @@ class TreeEnsemble(object):
         is_vehicle = torch.isin(y, vehicle_classes_index)
 
         if is_animal.any():
-            subroot_loss_animal = criterion(F.log_softmax(adv_logits_animal[is_animal],dim=1), F.softmax(logits_animal[is_animal], dim=1))
+            subroot_loss_animal = criterion(F.log_softmax(adv_logits_animal[is_animal],dim=1), F.softmax(logits_animal[is_animal], dim=1)) / len(y[is_animal])
         if is_vehicle.any():
-            subroot_loss_vehicle = criterion(F.log_softmax(adv_logits_vehicle[is_vehicle],dim=1), F.softmax(logits_vehicle[is_vehicle], dim=1))
+            subroot_loss_vehicle = criterion(F.log_softmax(adv_logits_vehicle[is_vehicle],dim=1), F.softmax(logits_vehicle[is_vehicle], dim=1)) / len(y[is_vehicle])
 
         loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
         return loss
+
+    def mart_loss_fn(self, adv_logits_set, logits_set, y):
+        """
+        Robust Loss function for tree model. In mart loss calculation.
+        """
+        kl = nn.KLDivLoss(reduction='none')
+
+        adv_root_logits, adv_logits_animal, adv_logits_vehicle = adv_logits_set
+        root_logits, logits_animal, logits_vehicle = logits_set
+
+        adv_probs_root = F.softmax(adv_root_logits, dim=1)
+        tmp1_root = torch.argsort(adv_probs_root, dim=1)[:, -2:]
+        new_y_root = torch.where(tmp1_root[:, -1] == y, tmp1_root[:, -2], tmp1_root[:, -1])
+        root_loss_adv = F.cross_entropy(adv_root_logits, y) + F.nll_loss(torch.log(1.0001 - adv_probs_root + 1e-12), new_y_root)
+
+        nat_probs_root = F.softmax(root_logits, dim=1)
+        true_probs_root = torch.gather(nat_probs_root, 1, (y.unsqueeze(1)).long()).squeeze()
+        root_loss_robust = (1.0 / len(y)) * torch.sum(
+            torch.sum(kl(torch.log(adv_probs_root + 1e-12), nat_probs_root), dim=1) * (1.0000001 - true_probs_root)
+        )
+
+        vehicle_loss_adv = torch.tensor(0.0, device=y.device)
+        animal_loss_adv = torch.tensor(0.0, device=y.device)
+        vehicle_loss_robust = torch.tensor(0.0, device=y.device)
+        animal_loss_robust = torch.tensor(0.0, device=y.device)
+
+        animal_classes_index = torch.tensor(animal_classes, device=y.device)
+        vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
+
+        is_animal = torch.isin(y, animal_classes_index)
+        is_vehicle = torch.isin(y, vehicle_classes_index)
+
+        if is_animal.any():
+            adv_probs_animal = F.softmax(adv_logits_animal[is_animal], dim=1)
+            tmp1_animal = torch.argsort(adv_probs_animal, dim=1)[:, -2:]
+            new_y_animal = torch.where(tmp1_animal[:, -1] == y[is_animal], tmp1_animal[:, -2], tmp1_animal[:, -1])
+            animal_loss_adv = F.cross_entropy(adv_logits_animal[is_animal], y[is_animal]) + F.nll_loss(
+                torch.log(1.0001 - adv_probs_animal + 1e-12), new_y_animal
+            )
+            
+            nat_probs_animal = F.softmax(logits_animal[is_animal], dim=1)
+            true_probs_animal = torch.gather(nat_probs_animal, 1, (y[is_animal].unsqueeze(1)).long()).squeeze()
+            animal_loss_robust = (1.0 / len(y[is_animal])) * torch.sum(
+                torch.sum(kl(torch.log(adv_probs_animal + 1e-12), nat_probs_animal), dim=1) * (1.0000001 - true_probs_animal)
+            )
+            
+        if is_vehicle.any():
+            adv_probs_vehicle = F.softmax(adv_logits_vehicle[is_vehicle], dim=1)
+            tmp1_vehicle = torch.argsort(adv_probs_vehicle, dim=1)[:, -2:]
+            new_y_vehicle = torch.where(tmp1_vehicle[:, -1] == y[is_vehicle], tmp1_vehicle[:, -2], tmp1_vehicle[:, -1])
+            vehicle_loss_adv = F.cross_entropy(adv_logits_vehicle[is_vehicle], y[is_vehicle]) + F.nll_loss(
+                torch.log(1.0001 - adv_probs_vehicle + 1e-12), new_y_vehicle
+            )
+            
+            nat_probs_vehicle = F.softmax(logits_vehicle[is_vehicle], dim=1)
+            true_probs_vehicle = torch.gather(nat_probs_vehicle, 1, (y[is_vehicle].unsqueeze(1)).long()).squeeze()
+            vehicle_loss_robust = (1.0 / len(y[is_vehicle])) * torch.sum(
+                torch.sum(kl(torch.log(adv_probs_vehicle + 1e-12), nat_probs_vehicle), dim=1) * (1.0000001 - true_probs_vehicle)
+            )
+        
+        loss_adv = self.alpha1 * root_loss_adv + self.alpha2 * animal_loss_adv + self.alpha3 * vehicle_loss_adv
+        loss_robust = self.alpha1 * root_loss_robust + self.alpha2 * animal_loss_robust + self.alpha3 * vehicle_loss_robust
+        return loss_adv, loss_robust
+
 
     def standard_loss(self, x, y):
         """

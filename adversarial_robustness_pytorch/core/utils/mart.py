@@ -54,3 +54,45 @@ def mart_loss(model, x_natural, y, optimizer, step_size=0.007, epsilon=0.031, pe
                      'adversarial_acc': accuracy(y, logits_adv.detach())}
         
     return loss, batch_metrics
+
+
+def mart_tree_loss(model, predict, tree_robust_loss, loss_fn, x_natural, y, optimizer, step_size=0.007, epsilon=0.031, perturb_steps=10, beta=6.0, 
+              attack='linf-pgd'):
+    """
+    MART training for tree ensembles.
+    """
+    
+    model.eval()
+    
+    # generate adversarial example
+    x_adv = x_natural.detach() + 0.001 * torch.randn(x_natural.shape).cuda().detach()
+    if attack == 'linf-pgd':
+        for _ in range(perturb_steps):
+            x_adv.requires_grad_()
+            with torch.enable_grad():
+                loss_ce = loss_fn(model(x_adv), y)
+            grad = torch.autograd.grad(loss_ce, [x_adv])[0]
+            x_adv = x_adv.detach() + step_size * torch.sign(grad.detach())
+            x_adv = torch.min(torch.max(x_adv, x_natural - epsilon), x_natural + epsilon)
+            x_adv = torch.clamp(x_adv, 0.0, 1.0)
+    else:
+        raise ValueError(f'Attack={attack} not supported for MART training!')
+    model.train()
+    
+    x_adv = Variable(torch.clamp(x_adv, 0.0, 1.0), requires_grad=False)
+    # zero gradient
+    optimizer.zero_grad()
+
+    logits = model(x_natural) # 3 tensor set 
+    logits_adv = model(x_adv) # 3 tensor set
+
+    loss_adv, loss_robust = tree_robust_loss(logits_adv, logits, y)
+    loss = loss_adv + float(beta) * loss_robust
+    
+    out_natural = predict(logits)
+    out_adv = predict(logits_adv)
+    batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, out_natural.detach()),
+                     'adversarial_acc': accuracy(y, out_adv.detach())}
+    
+    return loss, batch_metrics
+

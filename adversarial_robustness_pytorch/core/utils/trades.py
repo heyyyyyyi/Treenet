@@ -34,7 +34,7 @@ def trades_loss(model, x_natural, y, optimizer, step_size=0.003, epsilon=0.031, 
         for _ in range(perturb_steps):
             x_adv.requires_grad_()
             with torch.enable_grad():
-                loss_kl = criterion_kl(F.log_softmax(model(x_adv), dim=1), p_natural)
+                loss_kl = criterion_kl(F.log_softmax(model(x_adv), dim=1), p_natural) # not average over batch
             grad = torch.autograd.grad(loss_kl, [x_adv])[0]
             x_adv = x_adv.detach() + step_size * torch.sign(grad.detach())
             x_adv = torch.min(torch.max(x_adv, x_natural - epsilon), x_natural + epsilon)
@@ -79,8 +79,10 @@ def trades_loss(model, x_natural, y, optimizer, step_size=0.003, epsilon=0.031, 
     logits_natural = model(x_natural)
     logits_adv = model(x_adv)
     loss_natural = F.cross_entropy(logits_natural, y)
-    loss_robust = (1.0 / batch_size) * criterion_kl(F.log_softmax(logits_adv, dim=1),
-                                                    F.softmax(logits_natural, dim=1))
+    # loss_robust = (1.0 / batch_size) * criterion_kl(F.log_softmax(logits_adv, dim=1),
+    #                                                 F.softmax(logits_natural, dim=1))
+    loss_robust = criterion_kl(F.log_softmax(logits_adv, dim=1), p_natural)
+   
     loss = loss_natural + beta * loss_robust
     
     batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, logits_natural.detach()), 
