@@ -42,8 +42,8 @@ class TreeEnsemble(object):
 
         self.max_epochs = max_epochs
         self.alpha_update_strategy = alpha_update_strategy or {
-            #"balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
-            "balance_ratio": 1 / 1,
+            "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
+            # "balance_ratio": 1 / 1,
         }
 
         self.params = args
