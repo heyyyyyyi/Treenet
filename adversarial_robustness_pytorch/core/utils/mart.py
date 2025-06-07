@@ -89,8 +89,8 @@ def mart_tree_loss(model, predict, tree_robust_loss, loss_fn, x_natural, y, opti
     loss_adv, loss_robust = tree_robust_loss(logits_adv, logits, y)
     loss = loss_adv + float(beta) * loss_robust
     
-    out_natural = predict(logits)
-    out_adv = predict(logits_adv)
+    out_natural = predict(x_natural)
+    out_adv = predict(x_adv)
     batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, out_natural.detach()),
                      'adversarial_acc': accuracy(y, out_adv.detach())}
     

@@ -8,9 +8,7 @@ import torch.nn.functional as F
 import torch
 
 from core import animal_classes, vehicle_classes
-from .. import utils
-
-from core import animal_classes, vehicle_classes
+#from .. import utils
 
 class RootResNet(nn.Module):
     def __init__(self, block, num_blocks, num_channels=3, num_classes=10, linear_bias=True, bn_affine=True, device='cpu'):

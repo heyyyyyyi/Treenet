@@ -24,20 +24,19 @@ from core.utils import Logger
 from core.utils import parser_eval
 from core.utils import seed
 
-
+from core import animal_classes, vehicle_classes
 
 # Setup
 
 parse = parser_eval()
 args = parse.parse_args()
 
-LOG_DIR = args.log_dir + args.desc
+LOG_DIR = os.path.join(args.log_dir, args.desc)
 with open(LOG_DIR+'/args.txt', 'r') as f:
     old = json.load(f)
     args.__dict__ = dict(vars(args), **old)
 
-DATA_DIR = args.data_dir + args.data + '/'
-LOG_DIR = args.log_dir + args.desc
+DATA_DIR = os.path.join(args.data_dir, args.data)
 WEIGHTS = LOG_DIR + '/weights-best.pt'
 
 log_path = LOG_DIR + '/log-aa.log'
@@ -73,16 +72,41 @@ else:
 
 
 # Model
-
+print('Creating model: {}'.format(args.model))
 model = create_model(args.model, args.normalize, info, device)
 checkpoint = torch.load(WEIGHTS)
 if 'tau' in args and args.tau:
-    print ('Using WA model.')
+    print('Using WA model.')
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 del checkpoint
 
+# Wrap model for TreeEnsemble forward logic
+class TreeModelWrapper(nn.Module):
+    def __init__(self, model):
+        super(TreeModelWrapper, self).__init__()
+        self.model = model
 
+    def forward(self, x):
+        root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
+        root_pred = torch.argmax(root_logits, dim=1)
+
+        subroot_logits = torch.zeros_like(root_logits)
+        animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
+        vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
+
+        is_animal = torch.isin(root_pred, animal_classes_index)
+        is_vehicle = torch.isin(root_pred, vehicle_classes_index)
+
+        if is_animal.any():
+            subroot_logits[is_animal] = subroot_animal_logits[is_animal]
+        if is_vehicle.any():
+            subroot_logits[is_vehicle] = subroot_vehicle_logits[is_vehicle]
+
+        return subroot_logits
+
+if "tree" in args.model:
+    model = TreeModelWrapper(model)
 
 # AA Evaluation
 
@@ -98,4 +122,4 @@ if args.version == 'custom':
 with torch.no_grad():
     x_adv = adversary.run_standard_evaluation(x_test, y_test, bs=BATCH_SIZE_VALIDATION)
 
-print ('Script Completed.')
+print('Script Completed.')

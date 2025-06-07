@@ -79,9 +79,8 @@ def trades_loss(model, x_natural, y, optimizer, step_size=0.003, epsilon=0.031, 
     logits_natural = model(x_natural)
     logits_adv = model(x_adv)
     loss_natural = F.cross_entropy(logits_natural, y)
-    # loss_robust = (1.0 / batch_size) * criterion_kl(F.log_softmax(logits_adv, dim=1),
-    #                                                 F.softmax(logits_natural, dim=1))
-    loss_robust = criterion_kl(F.log_softmax(logits_adv, dim=1), p_natural)
+    loss_robust = (1.0 / batch_size) * criterion_kl(F.log_softmax(logits_adv, dim=1),
+                                                    F.softmax(logits_natural, dim=1))
    
     loss = loss_natural + beta * loss_robust
     
@@ -153,11 +152,12 @@ def trades_tree_loss(model, predict, tree_KL_loss, loss_fn, x_natural, y, optimi
     logits_natural = model(x_natural)
     logits_adv = model(x_adv)
     loss_natural = loss_fn(logits_natural, y)
-    loss_robust = (1.0 / batch_size) * tree_KL_loss(logits_adv, logits_natural, y)
+    #loss_robust = (1.0 / batch_size) * tree_KL_loss(logits_adv, logits_natural, y)
+    loss_robust = tree_KL_loss(logits_adv, logits_natural, y)
     loss = loss_natural + beta * loss_robust
     
-    out_natural = predict(logits_natural)
-    out_adv = predict(logits_adv)
+    out_natural = predict(x_natural)
+    out_adv = predict(x_adv)
     batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, out_natural.detach()),
                      'adversarial_acc': accuracy(y, out_adv.detach())}
     return loss, batch_metrics

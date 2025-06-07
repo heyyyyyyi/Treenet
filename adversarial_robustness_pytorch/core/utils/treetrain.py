@@ -13,7 +13,7 @@ from core.metrics import accuracy, binary_accuracy, subclass_accuracy
 from core.models import create_model
 
 from core.models import Normalization
-from .mart import mart_loss
+from .mart import mart_loss, mart_tree_loss
 from .rst import CosineLR
 from .trades import trades_loss, trades_tree_loss
 
@@ -34,7 +34,7 @@ class TreeEnsemble(object):
         alpha_update_strategy: dict = None,
     ):
         
-        self.model = self.create_tree_model(info, args, device)
+        self.model = create_model(args.model, args.normalize, info, device)
         
         self.alpha1 = alpha1
         self.alpha2 = alpha2
@@ -57,21 +57,6 @@ class TreeEnsemble(object):
                                                          self.params.attack_iter, self.params.attack_step)
         
 
-    def create_tree_model(self, info, args, device):
-        model = lighttreeresnet(args.model, num_classes=info['num_classes'], device=device)
-    
-        if args.normalize:
-            normalization_layer = Normalization(info['mean'], info['std']).to(device)
-            model.root_model = torch.nn.Sequential(normalization_layer, model.root_model)
-            model.subroot_animal = torch.nn.Sequential(normalization_layer, model.subroot_animal)
-            model.subroot_vehicle = torch.nn.Sequential(normalization_layer, model.subroot_vehicle)
-        else:
-            model.root_model = torch.nn.Sequential(model.root_model)
-            model.subroot_animal = torch.nn.Sequential(model.subroot_animal)
-            model.subroot_vehicle = torch.nn.Sequential(model.subroot_vehicle)
-        model = model.to(device)
-        return model
-    
     @staticmethod
     def init_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step):
         """
@@ -443,9 +428,11 @@ class TreeEnsemble(object):
         """
         MART training. TO DO ...
         """
-        loss, batch_metrics = mart_loss(self.model, x, y, self.optimizer, step_size=self.params.attack_step, 
-                                        epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
-                                        beta=beta, attack=self.params.attack)
+        loss, batch_metrics = mart_tree_loss(self.model, self.forward, self.mart_loss_fn, self.loss_fn, x, y, self.optimizer,
+                                                    step_size=self.params.attack_step, 
+                                                    epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
+                                                    beta=beta, attack=self.params.attack)
+
         return loss, batch_metrics  
 
     def eval(self, dataloader, adversarial=False):

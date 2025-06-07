@@ -69,6 +69,8 @@ def parser_eval():
     parser.add_argument('--log-dir', type=str, default='/cluster/scratch/rarade/test/')
         
     parser.add_argument('--desc', type=str, required=True, help='Description of model to be evaluated.')
+    #parser.add_argument('-d', '--data', type=str, default='cifar10s', choices=DATASETS, help='Data to use.')
+
     parser.add_argument('--num-samples', type=int, default=1000, help='Number of test samples.')
     
     # eval-aa.py
@@ -85,5 +87,11 @@ def parser_eval():
                         help='Threat model for RobustBench evaluation.')
     
     parser.add_argument('--seed', type=int, default=1, help='Random seed.')
+    
+    # parser.add_argument('--model', type=str, default='wrn-28-10-swish', choices=MODELS, help='Model architecture to be used.')
+    # parser.add_argument('--normalize', type=str2bool, default=False, help='Normalize input.')
+
+    # parser.add_argument('--batch-size', type=int, default=1024, help='Batch size for evaluation.')
+    # parser.add_argument('--batch-size-validation', type=int, default=512, help='Batch size for validation.')
     return parser
 

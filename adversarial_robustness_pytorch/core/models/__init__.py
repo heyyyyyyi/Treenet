@@ -42,7 +42,16 @@ def create_model(name, normalize, info, device):
         # add treeresnet and light resnet
         if 'tree' in name:
             backbone = lighttreeresnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
-            return backbone 
+            if normalize:
+                normalization_layer = Normalization(info['mean'], info['std']).to(device)
+                backbone.root_model = torch.nn.Sequential(normalization_layer, backbone.root_model)
+                backbone.subroot_animal = torch.nn.Sequential(normalization_layer, backbone.subroot_animal)
+                backbone.subroot_vehicle = torch.nn.Sequential(normalization_layer, backbone.subroot_vehicle)
+            else:
+                backbone.root_model = torch.nn.Sequential(backbone.root_model)
+                backbone.subroot_animal = torch.nn.Sequential(backbone.subroot_animal)
+                backbone.subroot_vehicle = torch.nn.Sequential(backbone.subroot_vehicle)
+            return backbone.to(device)
         elif 'light' in name:
             backbone = lightresnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
         elif 'preact-resnet' in name and 'swish' not in name:
@@ -69,4 +78,4 @@ def create_model(name, normalize, info, device):
     model = torch.nn.DataParallel(model)
     model = model.to(device)
     return model
- 
+
