@@ -99,7 +99,7 @@ if "tree" in args.model:
 seed(args.seed)
 clean_acc, robust_acc = benchmark(model, model_name=model_name, n_examples=args.num_samples, dataset=dataset,
                                   threat_model=threat_model, eps=args.attack_eps, device=device, to_disk=False, 
-                                  data_dir=args.tmp_dir + args.data + 'c')
+                                  data_dir=DATA_DIR+'c')
 
 
 logger.log('Model: {}'.format(args.desc))
