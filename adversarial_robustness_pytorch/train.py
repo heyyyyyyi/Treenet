@@ -27,7 +27,7 @@ from core import animal_classes, vehicle_classes
 import wandb
 
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
-_WANDB_PROJECT = "test"
+_WANDB_PROJECT = "baseline-adv-resnet20"
 
 
 # Setup
