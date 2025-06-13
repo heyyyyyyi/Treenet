@@ -451,10 +451,11 @@ class TreeEnsemble(object):
                 with ctx_noparamgrad_and_eval(self.model):
                     x_adv, _ = self.eval_attack.perturb(x, y)            
                 root_out, subroot_animal, subroot_veicle = self.model(x_adv)
+                out = self.forward(x_adv)
             else:
                 root_out, subroot_animal, subroot_veicle = self.model(x)
-
-            out = self.forward(x)
+                out = self.forward(x)
+                
             acc += accuracy(y, out)
             temp_acc_animal, temp_acc_vehicle = subclass_accuracy(y, out)
             acc_animal += temp_acc_animal
