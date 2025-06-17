@@ -183,12 +183,12 @@ def run_training(desc, num_classes, filter_classes=None, eval_metrics=None):
 
     logger.log('Script Completed.')
 
-    wandb.summary["final_train_acc"] = train_acc
+    wandb.summary["final_train_acc"] = res['clean_acc']
     wandb.summary["final_test_clean_acc"] = old_score[0]
     wandb.summary["final_test_adv_acc"] = old_score[1]
     wandb.finish()
 
 # Run training for three configurations
-run_training(desc="400mart_10-class", num_classes=10, eval_metrics=["animal", "vehicle", "bi"])
-run_training(desc="400mart_6-class-animal", num_classes=6, filter_classes=animal_classes, eval_metrics=["animal"])
-run_training(desc="400mart_4-class-vehicle", num_classes=4, filter_classes=vehicle_classes, eval_metrics=["vehicle"])
+run_training(desc="400_10-class", num_classes=10, eval_metrics=["animal", "vehicle", "bi"])
+run_training(desc="400_6-class-animal", num_classes=6, filter_classes=animal_classes, eval_metrics=["animal"])
+run_training(desc="400_4-class-vehicle", num_classes=4, filter_classes=vehicle_classes, eval_metrics=["vehicle"])

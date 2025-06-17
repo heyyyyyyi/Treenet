@@ -92,11 +92,8 @@ class TreeResNet(nn.Module):
         animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
         vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
 
-        is_animal = root_pred.unsqueeze(1) == animal_classes_index
-        is_animal = is_animal.any(dim=1)
-
-        is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
-        is_vehicle = is_vehicle.any(dim=1)
+        is_animal = torch.isin(root_pred, animal_classes_index).to(root_pred.device)
+        is_vehicle = torch.isin(root_pred, vehicle_classes_index).to(root_pred.device)
 
         # Fix for animal subroot logits
         if is_animal.any():
@@ -113,8 +110,8 @@ class TreeResNet(nn.Module):
             subroot_logits[vehicle_rows[:, None], vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
             unknown_value = subroot_vehicle_logits[:, -1] / len(animal_classes)
             subroot_logits[vehicle_rows[:, None], animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
-            
-            return root_logits, subroot_logits
+
+        return root_logits, subroot_logits
 
     
 class TreeResNet34(TreeResNet): # 【3，4，6，3】 resnet34， 【3，4，3】 treeresnet34 +【3】；
@@ -250,5 +247,5 @@ def lighttreeresnet(name, num_classes=2, pretrained=False, device='cpu'):
         )
     
     raise ValueError('Only lighttreeresnet20 is supported!')
-    return   
+    return
 

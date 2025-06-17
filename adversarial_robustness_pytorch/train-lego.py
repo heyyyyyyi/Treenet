@@ -1,5 +1,5 @@
 """
-Adversarial Training. (Tree)
+Adversarial Training. (Tree-lego)
 """
 
 import json
@@ -22,7 +22,7 @@ from core.utils import Logger
 from core.utils import parser_train
 
 #from core.utils import Trainer
-from core.utils import TreeEnsemble
+from tree_lego.treetrain import TreeEnsemble
 from core.utils import seed
 # use wandb for logging
 
@@ -31,6 +31,11 @@ import wandb
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
 _WANDB_PROJECT = "tree_test"
 
+# Enable CUDA debugging
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+# Debugging log
+print("CUDA_LAUNCH_BLOCKING set to 1 for synchronous error reporting.")
 
 # Setup
 
@@ -83,7 +88,12 @@ del train_dataset, test_dataset
 # Adversarial Training (AT, TRADES and MART)
 
 seed(args.seed)
+
+print("Starting adversarial training...")
 trainer = TreeEnsemble(info, args)
+
+# Debugging log: Check data loader
+print(f"Train dataloader length: {len(train_dataloader)}, Test dataloader length: {len(test_dataloader)}")
 
 logger.log("Model Summary:")
 # try:
@@ -175,8 +185,8 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         # test_adv_root_acc_animal = test_adv_res['root_acc_animal']
         # test_adv_root_acc_vehicle = test_adv_res['root_acc_vehicle']
 
-        logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
-                                                                                   test_adv_acc*100))
+        # logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
+        #                                                                            test_adv_acc*100))
         epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
         epoch_metrics.update({'test_adversarial_root_acc': test_adv_root_acc})
         epoch_metrics.update({'test_adversarial_acc_bi': test_adv_root_acc_bi})
@@ -185,8 +195,8 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         # epoch_metrics.update({'test_adversarial_root_acc_animal': test_adv_root_acc_animal})
         # epoch_metrics.update({'test_adversarial_root_acc_vehicle': test_adv_root_acc_vehicle})
 
-    else:
-        logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
+    # else:
+    #     logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
     
     # log alpha1, alpha2, alpha3
     logger.log('Alpha1: {:.4f}.\tAlpha2: {:.4f}.\tAlpha3: {:.4f}'.format(alpha1, alpha2, alpha3))
@@ -211,8 +221,8 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
 train_acc = res['clean_acc'] if 'clean_acc' in res else trainer.eval(train_dataloader)['acc']
 logger.log('\nTraining completed.')
 logger.log('Standard Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(train_acc*100, old_score[0]*100))
-if NUM_ADV_EPOCHS > 0:
-    logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, old_score[1]*100)) 
+# if NUM_ADV_EPOCHS > 0:
+#     logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, old_score[1]*100)) 
 
 logger.log('Script Completed.')
 

@@ -125,6 +125,7 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     
     res = trainer.train(train_dataloader, epoch=epoch, adversarial=True)
     test_res = trainer.eval(test_dataloader)
+    
     test_acc = test_res['acc']
     acc_animal = test_res['acc_animal'] 
     acc_vehicle = test_res['acc_vehicle'] 
