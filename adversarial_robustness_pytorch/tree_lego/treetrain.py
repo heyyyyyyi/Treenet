@@ -68,11 +68,12 @@ class TreeEnsemble(object):
             root_wrapper(model.root_model), criterion, attack_type, attack_eps, attack_iter, attack_step
         )
         animal_attack = create_attack(
-            animal_wrapper(model.subroot_animal), criterion, attack_type, attack_eps, attack_iter, attack_step
+            animal_wrapper(model.root_model, model.subroot_animal), criterion, attack_type, attack_eps, attack_iter, attack_step
         )
         vehicle_attack = create_attack(
-            vehicle_wrapper(model.subroot_vehicle), criterion, attack_type, attack_eps, attack_iter, attack_step
+            vehicle_wrapper(model.root_model, model.subroot_vehicle), criterion, attack_type, attack_eps, attack_iter, attack_step
         )
+
         eval_attack = create_attack(
             model_wrapper(model), criterion, attack_type, attack_eps, attack_iter, attack_step
         )
@@ -275,10 +276,9 @@ class TreeEnsemble(object):
 
         with ctx_noparamgrad_and_eval(self.model):
             x_adv, _ = self.rootattack.perturb(x, y)
-            _, embedding_adv = self.model.root_model(x_adv)
             #print(f"embedding_adv shape: {embedding_adv.shape}, x_adv shape: {x_adv.shape}")
-            embedding_animal_adv, _ = self.animalattack.perturb(embedding_adv, y)
-            embedding_vehicle_adv, _ = self.vehicleattack.perturb(embedding_adv, y)
+            animal_adv, _ = self.animalattack.perturb(x, y)
+            vehicle_adv, _ = self.vehicleattack.perturb(x, y)
 
         self.optimizer.zero_grad()
         if self.params.keep_clean:
@@ -288,8 +288,8 @@ class TreeEnsemble(object):
             y_adv = y
 
         root_logits, _ = self.model.root_model(x_adv)
-        subroot_animal = animal_wrapper(self.model.subroot_animal)(embedding_animal_adv)
-        subroot_vehicle = vehicle_wrapper(self.model.subroot_vehicle)(embedding_vehicle_adv)
+        subroot_animal = animal_wrapper(self.model.root_model, self.model.subroot_animal)(animal_adv)
+        subroot_vehicle = vehicle_wrapper(self.model.root_model, self.model.subroot_vehicle)(vehicle_adv)
 
         # Debugging log: Check logits shapes
         #print(f"root_logits shape: {root_logits.shape}, subroot_animal shape: {subroot_animal.shape}, subroot_vehicle shape: {subroot_vehicle.shape}")
@@ -307,13 +307,10 @@ class TreeEnsemble(object):
                                           epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
                                           beta=beta, attack=self.params.attack)
 
-        _, root_features = self.model.root_model(x)
-        root_features = root_features.detach()  # Detach to avoid gradients from root model affecting subroot models
-       
-        _, animalloss, _ = trades_loss(self.model.subroot_animal, root_features, y, self.optimizer, step_size=self.params.attack_step, 
+        _, animalloss, _ = trades_loss(animal_wrapper(self.model.root_model, self.model.subroot_animal), x, y, self.optimizer, step_size=self.params.attack_step, 
                                           epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
                                           beta=beta, attack=self.params.attack)
-        _, vehicle_loss, _ = trades_loss(self.model.subroot_vehicle, root_features, y, self.optimizer, step_size=self.params.attack_step,
+        _, vehicle_loss, _ = trades_loss(vehicle_wrapper(self.model.root_model, self.model.subroot_vehicle), x, y, self.optimizer, step_size=self.params.attack_step,
                                           epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
                                           beta=beta, attack=self.params.attack)
         
@@ -330,13 +327,10 @@ class TreeEnsemble(object):
                                         epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
                                         beta=beta, attack=self.params.attack)
 
-        _, root_features = self.model.root_model(x_adv)
-        root_features = root_features.detach()  # Detach to avoid gradients from root model affecting subroot models
-        
-        _, animalloss, _ = mart_loss(self.model.subroot_animal, root_features, y, self.optimizer, step_size=self.params.attack_step, 
+        _, animalloss, _ = mart_loss(animal_wrapper(self.model.root_model, self.model.subroot_animal), x, y, self.optimizer, step_size=self.params.attack_step, 
                                           epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
                                           beta=beta, attack=self.params.attack)
-        _, vehicle_loss, _ = mart_loss(self.model.subroot_vehicle, root_features, y, self.optimizer, step_size=self.params.attack_step,
+        _, vehicle_loss, _ = mart_loss(vehicle_wrapper(self.model.root_model, self.model.subroot_vehicle), x, y, self.optimizer, step_size=self.params.attack_step,
                                             epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
                                             beta=beta, attack=self.params.attack)
         batch_metrics = {'loss': loss.item()}
