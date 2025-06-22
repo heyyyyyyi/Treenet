@@ -241,7 +241,7 @@ def lighttreeresnet(name, num_classes=2, pretrained=False, device='cpu'):
         return LightTreeResNet(
             BasicBlock, 
             root_num_blocks=[2, 1], 
-            subroot_num_blocks=[1, 1], 
+            subroot_num_blocks=[1, 2], 
             num_classes=num_classes, 
             device=device
         )

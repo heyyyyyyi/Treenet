@@ -23,6 +23,8 @@ from core.utils.context import ctx_noparamgrad_and_eval
 
 from .wrapper import root_wrapper, model_wrapper, animal_wrapper, vehicle_wrapper
 
+from contextlib import contextmanager
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -216,6 +218,7 @@ class TreeEnsemble(object):
         Loss function for the model.
         nn.CrossEntropyLoss(reduction='mean'), no need to divide by batch size.
         """
+
         root_logits, logits_animal, logits_vehicle = logits_set #10dim, 10dim, 10dim 
       
         root_loss = self.criterion(root_logits, y)
@@ -228,7 +231,7 @@ class TreeEnsemble(object):
 
         is_animal = torch.isin(y, animal_classes_index)
         is_vehicle = torch.isin(y, vehicle_classes_index)
-
+        
         if is_animal.any():
             subroot_loss_animal = self.criterion(logits_animal[is_animal], y[is_animal])
         if is_vehicle.any():
@@ -288,11 +291,8 @@ class TreeEnsemble(object):
             y_adv = y
 
         root_logits, _ = self.model.root_model(x_adv)
-        subroot_animal = animal_wrapper(self.model.root_model, self.model.subroot_animal)(animal_adv)
-        subroot_vehicle = vehicle_wrapper(self.model.root_model, self.model.subroot_vehicle)(vehicle_adv)
-
-        # Debugging log: Check logits shapes
-        #print(f"root_logits shape: {root_logits.shape}, subroot_animal shape: {subroot_animal.shape}, subroot_vehicle shape: {subroot_vehicle.shape}")
+        subroot_animal = animal_wrapper(self.model.root_model, self.model.subroot_animal, detach=True)(animal_adv)
+        subroot_vehicle = vehicle_wrapper(self.model.root_model, self.model.subroot_vehicle, detach=True)(vehicle_adv)
 
         loss = self.loss_fn([root_logits, subroot_animal, subroot_vehicle], y_adv)
         batch_metrics = {'loss': loss.item()}

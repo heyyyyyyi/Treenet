@@ -42,7 +42,7 @@ class TreeEnsemble(object):
 
         self.max_epochs = max_epochs
         self.alpha_update_strategy = alpha_update_strategy or {
-            "balance_ratio": 2 / 3,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
+            "balance_ratio": 1 / 1,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
             # "balance_ratio": 1 / 1,
         }
 
@@ -71,58 +71,6 @@ class TreeEnsemble(object):
             eval_attack = create_attack(model, criterion, 'l2-pgd', 128/255, 20, 15/255)
         return attack,  eval_attack
     
-    # @staticmethod
-    # def init_attack(model, tree_criterion, attack_type, attack_eps, attack_iter, attack_step):
-        
-    #     class wrapper(object):
-    #         def __init__(self, model):
-    #             self.model = model
-
-    #         def forward(self, x):
-    #             root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
-    #             root_pred = torch.argmax(root_logits, dim=1)
-
-    #             subroot_logits = torch.zeros_like(root_logits)
-    #             animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
-    #             vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
-
-    #             is_animal = root_pred.unsqueeze(1) == animal_classes_index
-    #             is_animal = is_animal.any(dim=1)
-
-    #             is_vehicle = root_pred.unsqueeze(1) == vehicle_classes_index
-    #             is_vehicle = is_vehicle.any(dim=1)
-
-    #             # Fix for animal subroot logits
-    #             if is_animal.any():
-    #                 subroot_logits[is_animal] = subroot_animal_logits[is_animal]
-
-    #             if is_vehicle.any():
-    #                 subroot_logits[is_vehicle] = subroot_vehicle_logits[is_vehicle]
-
-    #             return subroot_logits
-            
-    #         def __call__(self, x):
-    #             return self.forward(x)
-        
-    #     wrapper_model = wrapper(model)
-    #     criterion = nn.CrossEntropyLoss()
-
-    #     # Initialize attack
-    #     if attack_type in ['linf-df', 'l2-df']:
-    #         attack = create_attack(wrapper_model, criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
-    #     else:
-    #         attack = create_attack(model, tree_criterion, attack_type, attack_eps, attack_iter, attack_step, rand_init_type='uniform')
-        
-    #     # Initialize evaluation attack
-        
-
-    #     if attack_type in ['linf-pgd', 'l2-pgd']:
-    #         eval_attack = create_attack(wrapper_model, criterion, attack_type, attack_eps, 2*attack_iter, attack_step)
-    #     elif attack_type in ['fgsm', 'linf-df']:
-    #         eval_attack = create_attack(wrapper_model, criterion, 'linf-pgd', 8/255, 20, 2/255)
-    #     elif attack_type in ['fgm', 'l2-df']:
-    #         eval_attack = create_attack(wrapper_model, criterion, 'l2-pgd', 128/255, 20, 15/255)
-    #     return attack, eval_attack
         
     def init_optimizer(self, num_epochs):
         """

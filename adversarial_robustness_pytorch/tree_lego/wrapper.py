@@ -48,14 +48,18 @@ class model_wrapper(object):
         return self.forward(x)
 
 class animal_wrapper(object):
-    def __init__(self, root_model, subroot_model):
+    def __init__(self, root_model, subroot_model, detach=False):
         self.root_model = root_model
         self.subroot_model = subroot_model
+        self.detach = detach
 
     def forward(self, x):
-        # Freeze root_model during forward pass
-        with torch.no_grad():
+        if self.detach:
+            with torch.no_grad():
+                _, root_features = self.root_model(x)
+        else:
             _, root_features = self.root_model(x)
+
         subroot_logits_animal = self.subroot_model(root_features)
 
         logits_animal = torch.zeros((x.size(0), 10), device=x.device)
@@ -73,14 +77,18 @@ class animal_wrapper(object):
 
 
 class vehicle_wrapper(object):
-    def __init__(self, root_model, subroot_model):
+    def __init__(self, root_model, subroot_model, detach=False):
         self.root_model = root_model
         self.subroot_model = subroot_model
+        self.detach = detach
 
     def forward(self, x):
-        # Freeze root_model during forward pass
-        with torch.no_grad():
+        if self.detach:
+            with torch.no_grad():
+                _, root_features = self.root_model(x)
+        else:
             _, root_features = self.root_model(x)
+
         subroot_logits_vehicle = self.subroot_model(root_features)
 
         logits_vehicle = torch.zeros((x.size(0), 10), device=x.device)
