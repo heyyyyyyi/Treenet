@@ -7,8 +7,10 @@ from sklearn.metrics import pairwise_distances
 from core.data import get_data_info, load_data
 from core.models import create_model
 from core.utils import Logger, parser_eval, seed
+from torch.autograd import Variable
 from core.attacks import create_attack  # Import attack creation utility
 from core.attacks import CWLoss  # Import CWLoss if needed
+from core.utils import ctx_noparamgrad_and_eval
 
 # ----------------- 解析参数 -------------------
 parse = parser_eval()
@@ -43,17 +45,6 @@ checkpoint = torch.load(WEIGHTS)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 
-# ----------------- 生成对抗样本 -------------------
-attack = create_attack(model, CWLoss, args.attack, args.attack_eps, args.attack_iter, args.attack_step)
-logger.log(f'Generating adversarial examples using {args.attack}')
-with torch.no_grad():
-    x_adv_list = []
-    for x, _ in loader:
-        x = x.to(device)
-        x_adv, _ = attack.perturb(x, None)
-        x_adv_list.append(x_adv)
-    x_adv = torch.cat(x_adv_list, 0).to(device)
-
 # ----------------- Clustering 类 -------------------
 class Clustering(nn.Module):
     def __init__(self, num_classes):
@@ -72,30 +63,91 @@ class Clustering(nn.Module):
         return F
 
     def spectral_clustering(self, confusion_mat, K=2, gamma=10):
-        # 构造距离矩阵 D
+        # Ensure confusion_mat is valid
+        if np.any(np.isnan(confusion_mat)) or np.any(np.isinf(confusion_mat)):
+            raise ValueError("Confusion matrix contains NaNs or infinities. Check input data.")
+
+        # Normalize confusion matrix
         confusion_norm = confusion_mat / (confusion_mat.sum(axis=1, keepdims=True) + 1e-8)
         A = 0.5 * ((np.eye(self.num_classes) - confusion_norm) + (np.eye(self.num_classes) - confusion_norm).T)
-        np.fill_diagonal(A, 0)
-        
-        D = A.sum(axis=1)
-        D_inv = np.diag(1.0 / (D + 1e-8) ** 0.5)
-        L = D_inv @ A @ D_inv
+        np.fill_diagonal(A, 1e-8)  # Add small value to diagonal for stability
 
-        # 取前 K 个最大特征向量
-        s, V = np.linalg.eigh(L)
+        # Compute degree matrix and its inverse square root
+        D = A.sum(axis=1)
+        D = np.maximum(D, 1e-8)  # Add a threshold to avoid zeros
+        D_inv = np.diag(1.0 / np.sqrt(D))
+
+        L = D_inv @ A @ D_inv
+        L = (L + L.T) / 2  # Ensure symmetry
+
+        # Check for NaNs or infinities in L
+        if np.any(np.isnan(L)) or np.any(np.isinf(L)):
+            raise ValueError("Matrix L contains NaNs or infinities. Check input data for numerical stability.")
+
+        # Compute eigenvectors for clustering
+        from scipy.linalg import eigh
+        s, V = eigh(L)
         eigenvector = V[:, -K:]  # shape: [num_classes, K]
         eigenvector = eigenvector / (np.linalg.norm(eigenvector, axis=1, keepdims=True) + 1e-8)
 
-        # 使用 KMeans 聚类
+        # Use KMeans for clustering
         from sklearn.cluster import KMeans
         km = KMeans(n_clusters=K, random_state=0)
         assignments = km.fit_predict(eigenvector)
         return assignments
 
+
+def get_all_assign(net, trainloader, device, adversarial=False):
+    required_data = []
+    required_targets = []
+    # ----------------- 生成对抗样本 -------------------
+    if adversarial:
+        attack = create_attack(model, CWLoss, args.attack, args.attack_eps, args.attack_iter, args.attack_step)
+        logger.log(f'Generating adversarial examples using {args.attack}')
+
+    for batch_idx, (inputs, targets) in enumerate(trainloader):
+        inputs, targets = inputs.to(device), targets.to(device)
+        inputs, targets = Variable(inputs), Variable(targets)
+        if adversarial:
+            with ctx_noparamgrad_and_eval(net):
+                inputs, _ = attack.perturb(inputs, targets)
+        batch_required_data = net(inputs)
+        batch_required_targets = targets
+
+        batch_required_data = batch_required_data.data.cpu().numpy()
+        batch_required_targets = batch_required_targets.data.cpu().numpy()
+        required_data = stack_or_create(required_data, batch_required_data, axis=0)
+        required_targets = stack_or_create(required_targets, batch_required_targets, axis=1)
+
+    return required_data, required_targets
+
+
+def stack_or_create(all_array, local_array, axis=1):
+    if isinstance(local_array, np.ndarray):
+        if len(all_array) != 0:
+            if axis == 1:
+                all_array = np.hstack((all_array, local_array))
+            else:
+                all_array = np.vstack((all_array, local_array))
+        else:
+            all_array = local_array
+    elif torch.is_tensor(local_array):
+        if len(all_array) != 0:
+            all_array = torch.cat((all_array, local_array), axis)
+        else:
+            all_array = local_array
+    return all_array
+
 # ----------------- 提取模型预测并聚类 -------------------
-with torch.no_grad():
-    coarse_outputs, coarse_target = model(x_adv, return_target=True)  # Use x_adv instead of x_test
-    coarse_preds = torch.argmax(coarse_outputs, dim=1)
+# with torch.no_grad():
+#     coarse_outputs, coarse_target = get_all_assign(model, train_loader, device, adversarial=False)
+#     coarse_outputs = torch.tensor(coarse_outputs, device=device)
+#     coarse_target = torch.tensor(coarse_target, device=device)
+#     coarse_preds = torch.argmax(coarse_outputs, dim=1)
+coarse_outputs, coarse_target = get_all_assign(model, train_loader, device, adversarial=True)
+coarse_outputs = torch.tensor(coarse_outputs, device=device)
+coarse_target = torch.tensor(coarse_target, device=device)
+coarse_preds = torch.argmax(coarse_outputs, dim=1) 
 
 function = Clustering(num_classes=args.num_classes)
 conf_matrix = function.confusion_matrix(coarse_preds, coarse_target)
