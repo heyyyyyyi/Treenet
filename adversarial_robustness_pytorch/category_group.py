@@ -7,6 +7,8 @@ from sklearn.metrics import pairwise_distances
 from core.data import get_data_info, load_data
 from core.models import create_model
 from core.utils import Logger, parser_eval, seed
+from core.attacks import create_attack  # Import attack creation utility
+from core.attacks import CWLoss  # Import CWLoss if needed
 
 # ----------------- 解析参数 -------------------
 parse = parser_eval()
@@ -40,6 +42,17 @@ model = create_model(args.model, args.normalize, info, device)
 checkpoint = torch.load(WEIGHTS)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
+
+# ----------------- 生成对抗样本 -------------------
+attack = create_attack(model, CWLoss, args.attack, args.attack_eps, args.attack_iter, args.attack_step)
+logger.log(f'Generating adversarial examples using {args.attack}')
+with torch.no_grad():
+    x_adv_list = []
+    for x, _ in loader:
+        x = x.to(device)
+        x_adv, _ = attack.perturb(x, None)
+        x_adv_list.append(x_adv)
+    x_adv = torch.cat(x_adv_list, 0).to(device)
 
 # ----------------- Clustering 类 -------------------
 class Clustering(nn.Module):
@@ -81,7 +94,7 @@ class Clustering(nn.Module):
 
 # ----------------- 提取模型预测并聚类 -------------------
 with torch.no_grad():
-    coarse_outputs, coarse_target = model(x_test, return_target=True)
+    coarse_outputs, coarse_target = model(x_adv, return_target=True)  # Use x_adv instead of x_test
     coarse_preds = torch.argmax(coarse_outputs, dim=1)
 
 function = Clustering(num_classes=args.num_classes)
