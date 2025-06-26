@@ -38,3 +38,6 @@ python -u train.py --config=config/cifar10_cfg.py --config.model.name=lighttreer
   ```python 
   python eval-rb.py --data-dir ./data     --log-dir ./baseline_log/origin     --desc origin_10_classifier     --data cifar10  --threat Linf
   ```
+
+  - category 
+  python category_group.py --data-dir ./data     --log-dir ./baseline_log/origin     --desc origin_10_classifier     --data cifar10
