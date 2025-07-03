@@ -53,7 +53,7 @@ class TreeEnsemble(object):
         if self.params.pretrained_file is not None:
             self.load_model(os.path.join(self.params.log_dir, self.params.pretrained_file, 'weights-best.pt'))
 
-        self.attack, self.eval_attack = self.init_attack(self.model, self.loss_fn, self.params.attack, self.params.attack_eps, 
+        self.attack, self.eval_attack = self.init_attack(self.model, self.wrap_loss_fn, self.params.attack, self.params.attack_eps, 
                                                          self.params.attack_iter, self.params.attack_step)
         
 
@@ -197,6 +197,7 @@ class TreeEnsemble(object):
             self.scheduler.step()
         return dict(metrics.mean())
     
+    
     def loss_fn(self, logits_set, y):
         """
         Loss function for the model.
@@ -222,6 +223,13 @@ class TreeEnsemble(object):
 
         loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
         
+        return loss, root_loss, subroot_loss_animal, subroot_loss_vehicle
+    
+    def wrap_loss_fn(self, logits_set, y):
+        """
+        Wrapper for loss function to return only the loss value.
+        """
+        loss, _, _, _ = self.loss_fn(logits_set, y)
         return loss
     
     def KL_loss_fn(self, adv_logits_set, logits_set, y):
@@ -325,10 +333,14 @@ class TreeEnsemble(object):
         self.optimizer.zero_grad()
         out = self.forward(x)
         root_logits, subroot_animal, subroot_veicle = self.model(x)
-        loss = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y)
+        loss, root_loss, subroot_loss_animal, subroot_loss_vehicle = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y)
         
         preds = out.detach()
-        batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
+        batch_metrics = {'loss': loss.item(),
+                        'root_loss': root_loss.item(),
+                        'subroot_loss_animal': subroot_loss_animal.item(),
+                        'subroot_loss_vehicle': subroot_loss_vehicle.item(),
+                        'clean_acc': accuracy(y, preds)}
         return loss, batch_metrics
 
     def adversarial_loss(self, x, y):
@@ -347,10 +359,13 @@ class TreeEnsemble(object):
             y_adv = y
         out = self.forward(x_adv)
         root_logits, subroot_animal, subroot_veicle = self.model(x_adv)
-        loss = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y_adv)
+        loss, root_loss, subroot_loss_animal, subroot_loss_vehicle = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y_adv)
         
         preds = out.detach()
-        batch_metrics = {'loss': loss.item()}
+        batch_metrics = {'loss': loss.item(), 
+                        'root_loss': root_loss.item(),
+                        'subroot_loss_animal': subroot_loss_animal.item(),
+                        'subroot_loss_vehicle': subroot_loss_vehicle.item()}
         if self.params.keep_clean:
             preds_clean, preds_adv = preds[:len(x)], preds[len(x):]
             batch_metrics.update({'clean_acc': accuracy(y, preds_clean), 'adversarial_acc': accuracy(y, preds_adv)})
@@ -365,7 +380,7 @@ class TreeEnsemble(object):
         # loss, batch_metrics = trades_loss(self.model, x, y, self.optimizer, step_size=self.params.attack_step, 
         #                                   epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
         #                                   beta=beta, attack=self.params.attack)
-        loss, batch_metrics = trades_tree_loss(self.model, self.forward, self.KL_loss_fn, self.loss_fn, x, y, self.optimizer,
+        loss, batch_metrics = trades_tree_loss(self.model, self.forward, self.KL_loss_fn, self.wrap_loss_fn, x, y, self.optimizer,
                                                   step_size=self.params.attack_step, 
                                                   epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
                                                   beta=beta, attack=self.params.attack)
@@ -376,7 +391,7 @@ class TreeEnsemble(object):
         """
         MART training. TO DO ...
         """
-        loss, batch_metrics = mart_tree_loss(self.model, self.forward, self.mart_loss_fn, self.loss_fn, x, y, self.optimizer,
+        loss, batch_metrics = mart_tree_loss(self.model, self.forward, self.mart_loss_fn, self.wrap_loss_fn, x, y, self.optimizer,
                                                     step_size=self.params.attack_step, 
                                                     epsilon=self.params.attack_eps, perturb_steps=self.params.attack_iter, 
                                                     beta=beta, attack=self.params.attack)
