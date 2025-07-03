@@ -81,10 +81,10 @@ class TreeEnsemble(object):
         Initialize optimizer and scheduler with different learning rates for root and subroot models.
         """
         self.optimizer = torch.optim.SGD([
-            {"params": self.model.root_model.parameters(), "lr": self.params.lr * 0.5},  # root: 学得稳定，稍小
+            {"params": self.model.root_model.parameters(), "lr": self.params.lr },  # root: 学得稳定，稍小
             {"params": self.model.subroot_animal.parameters(), "lr": self.params.lr},    # subroot-animal: 正常
-            {"params": self.model.subroot_vehicle.parameters(), "lr": self.params.lr * 1.5},  # vehicle 学得慢一点，可以提速
-            {"params": [self.s_r, self.s_a, self.s_v], "lr": self.params.lr * 0.01}  # kendall loss weight
+            {"params": self.model.subroot_vehicle.parameters(), "lr": self.params.lr },  # vehicle 学得慢一点，可以提速
+            {"params": [self.s_r, self.s_a, self.s_v], "lr": self.params.lr }  # kendall loss weight
         ],
             weight_decay=self.params.weight_decay, 
             momentum=0.9, 
@@ -106,7 +106,7 @@ class TreeEnsemble(object):
             update_steps = int(np.floor(num_samples / self.params.batch_size) + 1)
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
-                max_lr=[self.params.lr * 0.5, self.params.lr * 1.0, self.params.lr * 1.5, self.params.lr * 0.01],
+                max_lr=[self.params.lr , self.params.lr , self.params.lr , self.params.lr ],
                 pct_start=0.25,
                 steps_per_epoch=update_steps,
                 epochs=int(num_epochs),
@@ -120,7 +120,7 @@ class TreeEnsemble(object):
         elif self.params.scheduler == 'cosinew':
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
-                max_lr=[self.params.lr * 0.5, self.params.lr * 1.0, self.params.lr * 1.5, self.params.lr * 0.01],
+                max_lr=[self.params.lr , self.params.lr , self.params.lr , self.params.lr ],
                 pct_start=0.025,
                 total_steps=int(num_epochs),
             )
