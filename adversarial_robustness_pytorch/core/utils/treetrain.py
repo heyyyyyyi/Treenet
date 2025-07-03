@@ -47,7 +47,11 @@ class TreeEnsemble(object):
         }
 
         self.params = args
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.CrossEntropyLoss(reduction='mean')
+        # for kendall loss weight, set as trainable parameter 
+        self.s_r = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
+        self.s_a = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
+        self.s_v = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
 
         self.init_optimizer(self.params.num_adv_epochs)
         if self.params.pretrained_file is not None:
@@ -80,6 +84,7 @@ class TreeEnsemble(object):
             {"params": self.model.root_model.parameters(), "lr": self.params.lr * 0.5},  # root: 学得稳定，稍小
             {"params": self.model.subroot_animal.parameters(), "lr": self.params.lr},    # subroot-animal: 正常
             {"params": self.model.subroot_vehicle.parameters(), "lr": self.params.lr * 1.5},  # vehicle 学得慢一点，可以提速
+            {"params": [self.s_r, self.s_a, self.s_v], "lr": self.params.lr * 0.01}  # kendall loss weight
         ],
             weight_decay=self.params.weight_decay, 
             momentum=0.9, 
@@ -101,7 +106,7 @@ class TreeEnsemble(object):
             update_steps = int(np.floor(num_samples / self.params.batch_size) + 1)
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
-                max_lr=[self.params.lr * 0.5, self.params.lr * 1.0, self.params.lr * 1.5],
+                max_lr=[self.params.lr * 0.5, self.params.lr * 1.0, self.params.lr * 1.5, self.params.lr * 0.01],
                 pct_start=0.25,
                 steps_per_epoch=update_steps,
                 epochs=int(num_epochs),
@@ -115,7 +120,7 @@ class TreeEnsemble(object):
         elif self.params.scheduler == 'cosinew':
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
-                max_lr=[self.params.lr * 0.5, self.params.lr * 1.0, self.params.lr * 1.5],
+                max_lr=[self.params.lr * 0.5, self.params.lr * 1.0, self.params.lr * 1.5, self.params.lr * 0.01],
                 pct_start=0.025,
                 total_steps=int(num_epochs),
             )
@@ -205,7 +210,9 @@ class TreeEnsemble(object):
         """
         root_logits, logits_animal, logits_vehicle = logits_set #10dim, 10dim, 10dim 
       
-        root_loss = self.criterion(root_logits, y)
+        #root_loss = self.criterion(root_logits, y)
+        # set to 0
+        root_loss = torch.tensor(0.0, device=y.device)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -221,7 +228,10 @@ class TreeEnsemble(object):
         if is_vehicle.any():
             subroot_loss_vehicle = self.criterion(logits_vehicle[is_vehicle], y[is_vehicle])
 
-        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle 
+        # add kendall weight loss
+        loss = self.alpha1 * (root_loss/torch.exp(-self.s_r) + self.s_r) + \
+               self.alpha2 * (subroot_loss_animal/torch.exp(-self.s_a) + self.s_a) + \
+               self.alpha3 * (subroot_loss_vehicle/torch.exp(-self.s_v) + self.s_v)
         
         return loss, root_loss, subroot_loss_animal, subroot_loss_vehicle
     
