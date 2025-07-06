@@ -125,24 +125,30 @@ def pretrain_fine(epoch, fine_id):
     predictor = net.fines[fine_id]
     for batch_idx, (inputs, targets) in enumerate(required_train_loader):
         if cf.use_cuda:
-            inputs, targets = inputs.cuda(), targets.cuda() # GPU settings
+            inputs, targets = inputs.cuda(), targets.cuda()  # GPU settings
         optimizer.zero_grad()
         inputs, targets = Variable(inputs), Variable(targets).long()
 
-        outputs = predictor(net.share(inputs)) # Forward Propagation
-        loss = pred_loss(outputs, targets)
-        loss.backward()  # Backward Propagation
-        optimizer.step() # Optimizer update
+        # Map targets to the subset of classes handled by the fine model
+        fine_targets = torch.zeros_like(targets)
+        for idx, class_id in enumerate(net.class_set[fine_id]):
+            fine_targets[targets == class_id] = idx
 
-        num_ins = targets.size(0)
+        outputs = predictor(net.share(inputs))  # Forward Propagation
+        loss = pred_loss(outputs, fine_targets)  # Use mapped targets
+        loss.backward()  # Backward Propagation
+        optimizer.step()  # Optimizer update
+
+        num_ins = fine_targets.size(0)
         _, outputs = torch.max(outputs, 1)
-        correct = outputs.eq(targets.data).cpu().sum()
-        acc = 100.*correct.item()/num_ins
+        correct = outputs.eq(fine_targets.data).cpu().sum()
+        acc = 100. * correct.item() / num_ins
 
         sys.stdout.write('\r')
         sys.stdout.write('Pre-train Epoch [%3d/%3d] Iter [%3d/%3d]\t\t Loss: %.4f Accuracy: %.3f%%'
-                         %(epoch, args.num_epochs_pretrain, batch_idx+1, (required_train_loader.dataset.train_data.shape[0]//args.pretrain_batch_size)+1,
-                           loss.item(), acc))
+                         % (epoch, args.num_epochs_pretrain, batch_idx + 1,
+                            (required_train_loader.dataset.train_data.shape[0] // args.pretrain_batch_size) + 1,
+                            loss.item(), acc))
         sys.stdout.flush()
 
 
@@ -229,7 +235,8 @@ def independent_test(epoch, mode=999):
         if mode == 999:
             outputs = net.coarse(net.share(inputs))
         else:
-            outputs = net.fines[mode](net.share(inputs))
+            fine_outputs = net.fines[mode](net.share(inputs))
+            outputs = net.map_fine_predictions(fine_outputs, mode)
 
         _, predicted = torch.max(outputs.data, 1)
         num_ins += targets.size(0)
