@@ -53,7 +53,7 @@ class HD_CNN(nn.Module):
         share_outputs = self.share(inputs)
         coarse_outputs = self.coarse(share_outputs)  # Forward Propagation
         
-        final_outputs = torch.zeros((inputs.size(0),self.args.num_classes))
+        final_outputs = torch.zeros((inputs.size(0), self.args.num_classes))
         if cf.use_cuda:
             final_outputs = final_outputs.cuda()
 
@@ -63,12 +63,25 @@ class HD_CNN(nn.Module):
         
         for k in range(self.args.num_superclasses):
             # Forward Propagation for fine classes
-            final_outputs[:, self.class_set[k]] += self.fines[k](share_outputs) * B_o_ik[:, k].view((-1, 1))
+            fine_outputs = self.fines[k](share_outputs)
+            for idx, class_id in enumerate(self.class_set[k]):
+                final_outputs[:, class_id] += fine_outputs[:, idx] * B_o_ik[:, k]
 
         if return_coarse:
             return final_outputs, B_o_ik
 
         return final_outputs
+
+    def map_fine_predictions(self, fine_outputs, fine_id):
+        """
+        Map fine model predictions to the original class indices.
+        """
+        mapped_outputs = torch.zeros((fine_outputs.size(0), self.args.num_classes))
+        if cf.use_cuda:
+            mapped_outputs = mapped_outputs.cuda()
+        for idx, class_id in enumerate(self.class_set[fine_id]):
+            mapped_outputs[:, class_id] = fine_outputs[:, idx]
+        return mapped_outputs
 
 
 class Share(nn.Module):

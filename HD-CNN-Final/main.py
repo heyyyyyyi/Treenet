@@ -129,19 +129,19 @@ def pretrain_fine(epoch, fine_id):
         optimizer.zero_grad()
         inputs, targets = Variable(inputs), Variable(targets).long()
 
+        # Map targets to the subset of classes handled by the fine model
+        fine_targets = torch.zeros_like(targets)
+        for idx, class_id in enumerate(net.class_set[fine_id]):
+            fine_targets[targets == class_id] = idx
+
         outputs = predictor(net.share(inputs))  # Forward Propagation
-
-        # Ensure the output class count matches the target class count
-        if outputs.size(1) != len(net.class_set[fine_id]):
-            raise ValueError(f"Output class count ({outputs.size(1)}) does not match target class count ({len(net.class_set[fine_id])}).")
-
-        loss = pred_loss(outputs, targets)
+        loss = pred_loss(outputs, fine_targets)  # Use mapped targets
         loss.backward()  # Backward Propagation
         optimizer.step()  # Optimizer update
 
-        num_ins = targets.size(0)
+        num_ins = fine_targets.size(0)
         _, outputs = torch.max(outputs, 1)
-        correct = outputs.eq(targets.data).cpu().sum()
+        correct = outputs.eq(fine_targets.data).cpu().sum()
         acc = 100. * correct.item() / num_ins
 
         sys.stdout.write('\r')
@@ -236,7 +236,8 @@ def independent_test(epoch, mode=999):
         if mode == 999:
             outputs = net.coarse(net.share(inputs))
         else:
-            outputs = net.fines[mode](net.share(inputs))
+            fine_outputs = net.fines[mode](net.share(inputs))
+            outputs = net.map_fine_predictions(fine_outputs, mode)
 
         _, predicted = torch.max(outputs.data, 1)
         num_ins += targets.size(0)
