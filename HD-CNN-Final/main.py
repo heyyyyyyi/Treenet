@@ -69,8 +69,8 @@ print('\nModel setup')
 net = HD_CNN(args)
 if cf.use_cuda:
     net.cuda()
-    for i in range(args.num_superclasses):
-        net.fines[i].cuda()
+    # for i in range(args.num_superclasses):
+    #     net.fines[i].cuda()
     cudnn.benchmark = True
 
 # Print the total number of parameters
@@ -125,24 +125,30 @@ def pretrain_fine(epoch, fine_id):
     predictor = net.fines[fine_id]
     for batch_idx, (inputs, targets) in enumerate(required_train_loader):
         if cf.use_cuda:
-            inputs, targets = inputs.cuda(), targets.cuda() # GPU settings
+            inputs, targets = inputs.cuda(), targets.cuda()  # GPU settings
         optimizer.zero_grad()
         inputs, targets = Variable(inputs), Variable(targets).long()
 
-        outputs = predictor(net.share(inputs)) # Forward Propagation
+        outputs = predictor(net.share(inputs))  # Forward Propagation
+
+        # Ensure the output class count matches the target class count
+        if outputs.size(1) != len(net.class_set[fine_id]):
+            raise ValueError(f"Output class count ({outputs.size(1)}) does not match target class count ({len(net.class_set[fine_id])}).")
+
         loss = pred_loss(outputs, targets)
         loss.backward()  # Backward Propagation
-        optimizer.step() # Optimizer update
+        optimizer.step()  # Optimizer update
 
         num_ins = targets.size(0)
         _, outputs = torch.max(outputs, 1)
         correct = outputs.eq(targets.data).cpu().sum()
-        acc = 100.*correct.item()/num_ins
+        acc = 100. * correct.item() / num_ins
 
         sys.stdout.write('\r')
         sys.stdout.write('Pre-train Epoch [%3d/%3d] Iter [%3d/%3d]\t\t Loss: %.4f Accuracy: %.3f%%'
-                         %(epoch, args.num_epochs_pretrain, batch_idx+1, (required_train_loader.dataset.train_data.shape[0]//args.pretrain_batch_size)+1,
-                           loss.item(), acc))
+                         % (epoch, args.num_epochs_pretrain, batch_idx + 1,
+                            (required_train_loader.dataset.train_data.shape[0] // args.pretrain_batch_size) + 1,
+                            loss.item(), acc))
         sys.stdout.flush()
 
 
@@ -211,8 +217,9 @@ def test(epoch):
 def independent_test(epoch, mode=999):
     net.share.eval()
     net.coarse.eval()
-    for i in range(args.num_superclasses):
-        net.fines[i].eval()
+    if net.class_set:
+        for i in range(args.num_superclasses):
+            net.fines[i].eval()
 
     if mode == 999:
         required_loader = testloader
@@ -325,7 +332,10 @@ if not args.resume_model:
         #Initialize fine models
         print('\n==> Initialize fine models')
         net.assign_fine_classes()
-
+        if cf.use_cuda:
+            for i in range(args.num_superclasses):
+                net.fines[i].cuda()
+            
         print('\n\n==> train fine independents')
         best_acc = np.zeros((args.num_superclasses,))
         for fine_id in range(args.num_superclasses):
