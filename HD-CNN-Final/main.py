@@ -41,6 +41,10 @@ parser.add_argument('--gamma', default=5, type=float, help='The weight for u_k')
 parser.add_argument('--resume_coarse', default=False, type=bool, help='resume coarse from checkpoint')
 parser.add_argument('--resume_fines', default=False, type=bool, help='resume coarse & fines from checkpoint')
 parser.add_argument('--resume_model', default=False, type=bool, help='resume the whole model from checkpoint')
+parser.add_argument('--hard_clustering', default=False, type=bool, help='use hard clustering or not')
+
+
+
 args = parser.parse_args()
 
 # Hyper Parameter settings
@@ -129,19 +133,42 @@ def pretrain_fine(epoch, fine_id):
         optimizer.zero_grad()
         inputs, targets = Variable(inputs), Variable(targets).long()
 
-        # Map targets to the subset of classes handled by the fine model
-        fine_targets = torch.zeros_like(targets)
-        for idx, class_id in enumerate(net.class_set[fine_id]):
-            fine_targets[targets == class_id] = idx
+        # Check for NaN in inputs and targets
+        if torch.isnan(inputs).any() or torch.isnan(targets).any():
+            print(f"NaN detected in inputs or targets at batch {batch_idx}, skipping batch.")
+            continue
 
-        outputs = predictor(net.share(inputs))  # Forward Propagation
-        loss = pred_loss(outputs, fine_targets)  # Use mapped targets
+        outputs = predictor(net.share(inputs))
+
+
+        # Ensure the output class count matches the target class count
+        if outputs.size(1) != len(net.class_set[fine_id]):
+            raise ValueError(f"Output class count ({outputs.size(1)}) does not match target class count ({len(net.class_set[fine_id])}).")
+        
+        outputs = net.map_fine_predictions(outputs, fine_id)  # Forward Propagation
+        loss = pred_loss(outputs, targets)
+
+        # Check for NaN in loss
+        if torch.isnan(loss):
+            print(f"NaN detected in loss at batch {batch_idx}, skipping batch.")
+            continue
+
         loss.backward()  # Backward Propagation
+
+        # Add gradient clipping
+        torch.nn.utils.clip_grad_norm_(predictor.parameters(), max_norm=5.0)
+
+        # Check for NaN in gradients
+        for name, param in predictor.named_parameters():
+            if param.grad is not None and torch.isnan(param.grad).any():
+                print(f"NaN detected in gradients of {name} at batch {batch_idx}, skipping update.")
+                return
+
         optimizer.step()  # Optimizer update
 
-        num_ins = fine_targets.size(0)
+        num_ins = targets.size(0)
         _, outputs = torch.max(outputs, 1)
-        correct = outputs.eq(fine_targets.data).cpu().sum()
+        correct = outputs.eq(targets.data).cpu().sum()
         acc = 100. * correct.item() / num_ins
 
         sys.stdout.write('\r')
@@ -155,7 +182,7 @@ def pretrain_fine(epoch, fine_id):
 def fine_tune(epoch):
     net.share.train()
     net.coarse.train()
-    for i in range (args.num_superclasses):
+    for i in range(args.num_superclasses):
         net.fines[i].train()
 
     param = list(net.share.parameters()) + list(net.coarse.parameters())
@@ -166,27 +193,44 @@ def fine_tune(epoch):
     print('\n==> fine-tune Epoch #%d, LR=%.4f' % (epoch, lr))
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         if cf.use_cuda:
-            inputs, targets = inputs.cuda(), targets.cuda() # GPU settings
+            inputs, targets = inputs.cuda(), targets.cuda()  # GPU settings
         optimizer.zero_grad()
         inputs, targets = Variable(inputs), Variable(targets).long()
 
         outputs, coarse_outputs = net(inputs, return_coarse=True)
 
         tloss = pred_loss(outputs, targets)
-        closs = consistency_loss(coarse_outputs, t_k, weight=args.weight_consistency)
+        closs = consistency_loss(coarse_outputs, t_k, net.P_d, weight=args.weight_consistency)
         loss = tloss + closs
+
+        # Check for NaN in loss
+        if torch.isnan(loss):
+            print(f"NaN detected in loss at batch {batch_idx}, skipping update.")
+            continue
+
         loss.backward()  # Backward Propagation
+
+        # Add gradient clipping
+        torch.nn.utils.clip_grad_norm_(param, max_norm=5.0)
+
+        # Check for NaN in gradients
+        for name, param in net.named_parameters():
+            if param.grad is not None and torch.isnan(param.grad).any():
+                print(f"NaN detected in gradients of {name} at batch {batch_idx}, skipping update.")
+                return
+
         optimizer.step()
 
         _, predicted = torch.max(outputs.data, 1)
         num_ins = targets.size(0)
         correct = predicted.eq(targets.data).cpu().sum()
-        acc = 100.*correct.item()/num_ins
+        acc = 100. * correct.item() / num_ins
 
         sys.stdout.write('\r')
         sys.stdout.write('Finetune Epoch [%3d/%3d] Iter [%3d/%3d]\t\t tloss: %.4f closs: %.4f Loss: %.4f Accuracy: %.3f%%'
-                         %(epoch, args.num_epochs_train, batch_idx+1, (trainloader.dataset.train_data.shape[0]//args.train_batch_size)+1,
-                           tloss.item(), closs.item(), loss.item(), acc))
+                         % (epoch, args.num_epochs_train, batch_idx + 1,
+                            (trainloader.dataset.train_data.shape[0] // args.train_batch_size) + 1,
+                            tloss.item(), closs.item(), loss.item(), acc))
         sys.stdout.flush()
 
 
@@ -236,8 +280,7 @@ def independent_test(epoch, mode=999):
         if mode == 999:
             outputs = net.coarse(net.share(inputs))
         else:
-            fine_outputs = net.fines[mode](net.share(inputs))
-            outputs = net.map_fine_predictions(fine_outputs, mode)
+            outputs = net.fines[mode](net.share(inputs))
 
         _, predicted = torch.max(outputs.data, 1)
         num_ins += targets.size(0)
@@ -286,6 +329,9 @@ if not args.resume_model:
         cluster_result = function.spectral_clustering(D, K=args.num_superclasses, gamma=10)
         # print coarse category and related fine categories
         print('Cluster_Result:', cluster_result)
+    
+
+        
 
         print('\n==> Get Confusion coefficient')
         P_d = np.zeros((args.num_classes, args.num_superclasses))
@@ -296,13 +342,32 @@ if not args.resume_model:
         net.P_d = torch.from_numpy(P_d)
         for class_id in range(args.num_classes):
             u_kj[class_id] = np.mean(B_d_ik[validloader.dataset.train_labels == class_id], 0)
+
+
         u_t = 1 / (args.num_superclasses * args.gamma)
         P_o = (u_kj >= u_t).astype(np.float32)
+        # improve：
+        # in order to make sure each superclass has at least min_classes classes
+        #P_o shape: (num_classes, num_superclasses)
+        for k in range(args.num_superclasses):
+            if np.sum(P_o[:, k]) == 0:
+                # 找到 coarse class k 最相关的 fine class（u_kj 的这一列中最大值）
+                most_related_class = np.argmax(u_kj[:, k])
+                P_o[most_related_class, k] = 1
+                print(f"⚠️ Warning: Coarse class {k} had no fine classes. Assigned fine class {most_related_class} by force.")
+            
         print(P_o) # thresholded coarse category assignment matrix
         net.P_o = torch.from_numpy(P_o)
-        for k in range(args.num_superclasses):
-            net.class_set[k] = np.where(P_o[:,k] == 1)[0].astype(int)
-        
+
+        if args.hard_clustering:
+            # Hard clustering: directly use cluster results
+            for k in range(args.num_superclasses):
+                net.class_set[k] = np.where(cluster_result == k)[0].astype(int)
+            
+        else:
+            for k in range(args.num_superclasses):
+                net.class_set[k] = np.where(P_o[:,k] == 1)[0].astype(int)
+            
         if cf.use_cuda:
             net.P_d = net.P_d.cuda()
             net.P_o = net.P_o.cuda()
@@ -319,8 +384,8 @@ if not args.resume_model:
 
         print('\nSaving Parameters...' )
         state = {
-            'net.P_d': net.P_d,
-            'net.P_o': net.P_o,
+            'net.P_d': net.P_d if hasattr(net, 'P_d') else None,
+            'net.P_o': net.P_o if hasattr(net, 'P_o') else None,
             'net.class_set': net.class_set,
             't_k': t_k,
         }
@@ -332,7 +397,9 @@ if not args.resume_model:
 
         #Initialize fine models
         print('\n==> Initialize fine models')
+        print("class_set:", net.class_set)
         net.assign_fine_classes()
+
         if cf.use_cuda:
             for i in range(args.num_superclasses):
                 net.fines[i].cuda()

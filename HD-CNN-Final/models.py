@@ -51,24 +51,42 @@ class HD_CNN(nn.Module):
 
     def forward(self, inputs, return_coarse=False):
         share_outputs = self.share(inputs)
-        coarse_outputs = self.coarse(share_outputs)  # Forward Propagation
-        
-        final_outputs = torch.zeros((inputs.size(0), self.args.num_classes))
-        if cf.use_cuda:
-            final_outputs = final_outputs.cuda()
+        coarse_outputs = self.coarse(share_outputs)  # Forward Propagation for coarse classes
 
-        assign_prob = F.softmax(coarse_outputs.data, dim=1)
-        B_o_ik = torch.mm(assign_prob, self.P_o.float())  # C*K for fine k
-        B_o_ik = B_o_ik / torch.sum(B_o_ik, 1).view((-1, 1))  # Norm
-        
-        for k in range(self.args.num_superclasses):
-            # Forward Propagation for fine classes
-            fine_outputs = self.fines[k](share_outputs)
-            for idx, class_id in enumerate(self.class_set[k]):
-                final_outputs[:, class_id] += fine_outputs[:, idx] * B_o_ik[:, k]
+        if self.args.hard_clustering:
+            # Hard assignment logic
+            _, coarse_pred = torch.max(coarse_outputs, 1)  # [B] ∈ {0, ..., K-1}
+            batch_size = inputs.size(0)
+            final_outputs = torch.zeros((batch_size, self.args.num_classes), device=inputs.device)
+
+            for k in range(self.args.num_superclasses):
+                mask = (coarse_pred == k)  # Mask for samples belonging to coarse class k
+                idxs = mask.nonzero(as_tuple=False).squeeze()  # Indices of samples
+
+                if idxs.numel() == 0:
+                    continue  # Skip if no samples for this coarse class
+
+                subset_share_outputs = share_outputs[idxs]
+                if subset_share_outputs.dim() == 3:  # 如果维度降到 3D
+                    subset_share_outputs = subset_share_outputs.unsqueeze(0)  # 添加一个 batch 维度
+                
+                fine_out = self.fines[k](subset_share_outputs)  # Forward through fine classifier
+                mapped_output = self.map_fine_predictions(fine_out, k)  # Map to full class space
+                final_outputs[idxs] = mapped_output  # Insert into final outputs
+        else:
+            # Soft assignment logic
+            final_outputs = torch.zeros((inputs.size(0), self.args.num_classes), device=inputs.device)
+            assign_prob = F.softmax(coarse_outputs.data, dim=1)
+            B_o_ik = torch.mm(assign_prob, self.P_o.float())  # C*K for fine k
+            B_o_ik = B_o_ik / torch.sum(B_o_ik, 1).view((-1, 1))  # Normalize
+
+            for k in range(self.args.num_superclasses):
+                fine_outputs = self.map_fine_predictions(self.fines[k](share_outputs), k)
+                for idx, class_id in enumerate(self.class_set[k]):
+                    final_outputs[:, class_id] += fine_outputs[:, idx] * B_o_ik[:, k]
 
         if return_coarse:
-            return final_outputs, B_o_ik
+            return final_outputs, coarse_outputs
 
         return final_outputs
 

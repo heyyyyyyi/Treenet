@@ -145,16 +145,24 @@ class CIFAR10(data.Dataset):
             train_data = np.empty((0, 32, 32, 3)).astype(np.uint8)
             train_labels = np.empty((0,)).astype(np.int64)
             for class_label in classes:
-                train_data = np.vstack((train_data, self.train_data[self.train_labels == class_label]))
-                train_labels = np.hstack((train_labels, self.train_labels[self.train_labels == class_label]))
+                class_data = self.train_data[self.train_labels == class_label]
+                class_labels = self.train_labels[self.train_labels == class_label]
+                train_data = np.vstack((train_data, class_data))
+                train_labels = np.hstack((train_labels, class_labels))
+            if len(train_data) == 0:
+                raise ValueError(f"No samples found for classes {classes} in the training dataset.")
             self.train_data = train_data
             self.train_labels = train_labels
         else:
             test_data = np.empty((0, 32, 32, 3)).astype(np.uint8)
             test_labels = np.empty((0,)).astype(np.int64)
             for class_label in classes:
-                test_data = np.vstack((test_data, self.test_data[self.test_labels == class_label]))
-                test_labels = np.hstack((test_labels, self.test_labels[self.test_labels == class_label]))
+                class_data = self.test_data[self.test_labels == class_label]
+                class_labels = self.test_labels[self.test_labels == class_label]
+                test_data = np.vstack((test_data, class_data))
+                test_labels = np.hstack((test_labels, class_labels))
+            if len(test_data) == 0:
+                raise ValueError(f"No samples found for classes {classes} in the test dataset.")
             self.test_data = test_data
             self.test_labels = test_labels
 
@@ -262,7 +270,7 @@ def get_all_dataLoders(args, valid=False, one_hot=True):
     ])
 
     #root_path = 'F:/data/'
-    root_path = '/home/yhe106/tree_model/Treenet/adversarial_robustness_pytorch/data/cifar10'
+    root_path = '/workspace/Treenet/adversarial_robustness_pytorch/data/cifar10'
     if(args.dataset == 'cifar-10'):
         trainset = CIFAR10(root=root_path, train=True, valid=valid, classes=np.arange(10), transform=data_transform)
         testset = CIFAR10(root=root_path, train=False, classes=np.arange(10), transform=data_transform)
