@@ -201,9 +201,12 @@ class LightTreeResNet(nn.Module):
     def __init__(self, block, root_num_blocks, subroot_num_blocks, num_classes=10, linear_bias=True, bn_affine=True, device='cpu'):
         super(LightTreeResNet, self).__init__()
         self.root_model = LightRootResnet(block, root_num_blocks, num_classes=num_classes,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 10分类 
-        self.subroot_animal = LightSubRootResNet(block, subroot_num_blocks, num_classes=7,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 6种动物 + 1 none of them
-        self.subroot_vehicle = LightSubRootResNet(block, subroot_num_blocks, num_classes=5,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 4种交通工具 + 1 none of them 
+        # self.subroot_animal = LightSubRootResNet(block, subroot_num_blocks, num_classes=7,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 6种动物 + 1 none of them
+        # self.subroot_vehicle = LightSubRootResNet(block, subroot_num_blocks, num_classes=5,linear_bias=linear_bias,bn_affine=bn_affine, device=device)  # 4种交通工具 + 1 none of them 
 
+        # no need to consider unknown class
+        self.subroot_animal = LightSubRootResNet(block, subroot_num_blocks, num_classes=6,linear_bias=linear_bias,bn_affine=bn_affine, device=device)
+        self.subroot_vehicle = LightSubRootResNet(block, subroot_num_blocks, num_classes=4,linear_bias=linear_bias,bn_affine=bn_affine, device=device)
     def forward(self, x):
         root_logits, root_features = self.root_model(x)
         subroot_logits_animal = self.subroot_animal(root_features)
@@ -215,14 +218,15 @@ class LightTreeResNet(nn.Module):
         animal_classes_index = torch.tensor(animal_classes)
         vehicle_classes_index = torch.tensor(vehicle_classes)
 
-        logits_animal[:, animal_classes_index] = subroot_logits_animal[:, :-1]
-        unknown_value = subroot_logits_animal[:, -1] / len(vehicle_classes)
-        logits_animal[:, vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
+        # logits_animal[:, animal_classes_index] = subroot_logits_animal[:, :-1]
+        # unknown_value = subroot_logits_animal[:, -1] / len(vehicle_classes)
+        # logits_animal[:, vehicle_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(vehicle_classes))
 
-        logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle[:, :-1]
-        unknown_value = subroot_logits_vehicle[:, -1] / len(animal_classes)
-        logits_vehicle[:, animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
-
+        # logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle[:, :-1]
+        # unknown_value = subroot_logits_vehicle[:, -1] / len(animal_classes)
+        # logits_vehicle[:, animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
+        logits_animal[:, animal_classes_index] = subroot_logits_animal
+        logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle
 
         return root_logits, logits_animal, logits_vehicle
 
