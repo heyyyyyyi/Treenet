@@ -47,59 +47,36 @@ class HD_CNN(nn.Module):
         if not self.class_set:
             raise ValueError("No classes assigned. Please assign fine classes before proceeding.")
         for i in range (self.args.num_superclasses):
-            self.fines[i] = Independent(self.args, len(self.class_set[i]))
+            self.fines[i] = Independent(self.args, len(self.class_set[i]), self.class_set[i])
 
     def forward(self, inputs, return_coarse=False):
         share_outputs = self.share(inputs)
         coarse_outputs = self.coarse(share_outputs)  # Forward Propagation for coarse classes
+        final_outputs = torch.zeros((inputs.size(0), self.args.num_classes), device=inputs.device)
+        assign_prob = F.softmax(coarse_outputs.data, dim=1)
+        B_o_ik = torch.mm(assign_prob, self.P_o.float())  # C*K for fine k
+        B_o_ik = B_o_ik / torch.sum(B_o_ik, 1).view((-1, 1))  # Normalize
 
-        if self.args.hard_clustering:
-            # Hard assignment logic
-            _, coarse_pred = torch.max(coarse_outputs, 1)  # [B] ∈ {0, ..., K-1}
-            batch_size = inputs.size(0)
-            final_outputs = torch.zeros((batch_size, self.args.num_classes), device=inputs.device)
-
-            for k in range(self.args.num_superclasses):
-                mask = (coarse_pred == k)  # Mask for samples belonging to coarse class k
-                idxs = mask.nonzero(as_tuple=False).squeeze()  # Indices of samples
-
-                if idxs.numel() == 0:
-                    continue  # Skip if no samples for this coarse class
-
-                subset_share_outputs = share_outputs[idxs]
-                if subset_share_outputs.dim() == 3:  # 如果维度降到 3D
-                    subset_share_outputs = subset_share_outputs.unsqueeze(0)  # 添加一个 batch 维度
-                
-                fine_out = self.fines[k](subset_share_outputs)  # Forward through fine classifier
-                mapped_output = self.map_fine_predictions(fine_out, k)  # Map to full class space
-                final_outputs[idxs] = mapped_output  # Insert into final outputs
-        else:
-            # Soft assignment logic
-            final_outputs = torch.zeros((inputs.size(0), self.args.num_classes), device=inputs.device)
-            assign_prob = F.softmax(coarse_outputs.data, dim=1)
-            B_o_ik = torch.mm(assign_prob, self.P_o.float())  # C*K for fine k
-            B_o_ik = B_o_ik / torch.sum(B_o_ik, 1).view((-1, 1))  # Normalize
-
-            for k in range(self.args.num_superclasses):
-                fine_outputs = self.map_fine_predictions(self.fines[k](share_outputs), k)
-                for idx, class_id in enumerate(self.class_set[k]):
-                    final_outputs[:, class_id] += fine_outputs[:, idx] * B_o_ik[:, k]
+        for k in range(self.args.num_superclasses):
+            fine_outputs = self.fines[k](share_outputs)
+            for idx, class_id in enumerate(self.class_set[k]):
+                final_outputs[:, class_id] += fine_outputs[:, idx] * B_o_ik[:, k]
 
         if return_coarse:
             return final_outputs, coarse_outputs
 
         return final_outputs
 
-    def map_fine_predictions(self, fine_outputs, fine_id):
-        """
-        Map fine model predictions to the original class indices.
-        """
-        mapped_outputs = torch.zeros((fine_outputs.size(0), self.args.num_classes))
-        if cf.use_cuda:
-            mapped_outputs = mapped_outputs.cuda()
-        for idx, class_id in enumerate(self.class_set[fine_id]):
-            mapped_outputs[:, class_id] = fine_outputs[:, idx]
-        return mapped_outputs
+    # def map_fine_predictions(self, fine_outputs, fine_id):
+    #     """
+    #     Map fine model predictions to the original class indices.
+    #     """
+    #     mapped_outputs = torch.zeros((fine_outputs.size(0), self.args.num_classes))
+    #     if cf.use_cuda:
+    #         mapped_outputs = mapped_outputs.cuda()
+    #     for idx, class_id in enumerate(self.class_set[fine_id]):
+    #         mapped_outputs[:, class_id] = fine_outputs[:, idx]
+    #     return mapped_outputs
 
 
 class Share(nn.Module):
@@ -132,8 +109,9 @@ class Share(nn.Module):
 
 
 class Independent(nn.Module):
-    def __init__(self, args, num_classes):
+    def __init__(self, args, num_classes, map_outputs=None):
         super(Independent, self).__init__()
+        self.map_outputs = map_outputs
         self.args = args
         # Independent Encoder layers
         self.enc_conv3_1 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1, bias=False)
@@ -159,6 +137,9 @@ class Independent(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, x, *args, **kwargs):
+        # Ensure input and weights are on the same device
+        if x.device != self.enc_conv3_1.weight.device:
+            x = x.to(self.enc_conv3_1.weight.device)
         x = self.enc_drop3(self.relu(self.enc_bn3_1(self.enc_conv3_1(x))))
         x = self.enc_max_pool3(self.relu(self.enc_bn3_2(self.enc_conv3_2(x))))
         x = self.enc_drop4(self.relu(self.enc_bn4_1(self.enc_conv4_1(x))))
@@ -166,7 +147,15 @@ class Independent(nn.Module):
         x = x.reshape(-1,512*2*2)
         x = self.fc_drop1(self.fc1(x))
         x = self.fc_drop2(self.fc2(x))
-        return self.fc3(x)
+        out = self.fc3(x)
+
+        if self.map_outputs is not None:
+            mapped_outputs = torch.zeros((out.size(0), self.args.num_classes), device=out.device)
+            for idx, class_id in enumerate(self.map_outputs):
+                mapped_outputs[:, class_id] = out[:, idx]
+            return mapped_outputs
+        
+        return out 
 
 
 class Clustering(nn.Module):

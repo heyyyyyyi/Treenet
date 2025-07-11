@@ -15,6 +15,7 @@ import sys
 import time
 import argparse
 import matplotlib.pyplot as plt
+import wandb
 
 from dataset import get_all_dataLoders, get_dataLoder
 from models import HD_CNN, Clustering
@@ -33,19 +34,23 @@ parser.add_argument('--min_classes', default=2, type=int, help='The minimum of c
 
 parser.add_argument('--opt_type', default='sgd', type=str, help='Determine the type of the optimizer')
 parser.add_argument('--pretrain_lr', default=0.1, type=float, help='The learning rate of pre-training')
-parser.add_argument('--finetune_lr', default=0.001, type=float, help='The learning rate of inner model')
+parser.add_argument('--finetune_lr', default=0.01, type=float, help='The learning rate of inner model')
 parser.add_argument('--drop_rate', default=0.5, type=float, help='The probability of to keep')
 parser.add_argument('--weight_consistency', default=1e1, type=float, help='The weight of coarse category consistency')
-parser.add_argument('--gamma', default=5, type=float, help='The weight for u_k')#1.25
+parser.add_argument('--gamma', default=10, type=float, help='The weight for u_k')#1.25
 
 parser.add_argument('--resume_coarse', default=False, type=bool, help='resume coarse from checkpoint')
 parser.add_argument('--resume_fines', default=False, type=bool, help='resume coarse & fines from checkpoint')
 parser.add_argument('--resume_model', default=False, type=bool, help='resume the whole model from checkpoint')
 parser.add_argument('--hard_clustering', default=False, type=bool, help='use hard clustering or not')
 
-
-
 args = parser.parse_args()
+
+_WANDB_USERNAME = "yhe106-johns-hopkins-university"
+_WANDB_PROJECT = "tree_test"
+_WANDB_NAME = f"HD-CNN-{args.dataset}-superclasses-{args.num_superclasses}-epochs-{args.num_epochs_train}"
+# Initialize wandb
+wandb.init(project=_WANDB_PROJECT, entity=_WANDB_USERNAME, name=_WANDB_NAME, config=args)
 
 # Hyper Parameter settings
 cf.use_cuda = torch.cuda.is_available()
@@ -73,8 +78,6 @@ print('\nModel setup')
 net = HD_CNN(args)
 if cf.use_cuda:
     net.cuda()
-    # for i in range(args.num_superclasses):
-    #     net.fines[i].cuda()
     cudnn.benchmark = True
 
 # Print the total number of parameters
@@ -82,6 +85,16 @@ total_params = count_parameters(net)
 print(f"Total number of parameters in the network: {total_params}")
 
 function = Clustering(args)
+
+def log_metrics(epoch, loss, accuracy, phase="train"):
+    """
+    Log metrics to wandb.
+    """
+    wandb.log({
+        f"{phase}_epoch": epoch,
+        f"{phase}_loss": loss,
+        f"{phase}_accuracy": accuracy
+    })
 
 # Pre-Training
 def pretrain_coarse(epoch):
@@ -91,7 +104,6 @@ def pretrain_coarse(epoch):
     param = list(net.share.parameters())+list(net.coarse.parameters())
     optimizer, lr = get_optim(param, args, mode='preTrain', epoch=epoch)
 
-    print('\n==> Epoch #%d, LR=%.4f' % (epoch, lr))
     for batch_idx, (inputs, targets) in enumerate(pretrainloader):
         if cf.use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda() # GPU setting
@@ -111,12 +123,10 @@ def pretrain_coarse(epoch):
         _, predicted = torch.max(outputs.data, 1)
         num_ins = targets.size(0)
         correct = predicted.eq(targets.data).cpu().sum()
+        accuracy = 100. * correct.item() / num_ins
 
-        sys.stdout.write('\r')
-        sys.stdout.write('Pre-train Epoch [%3d/%3d] Iter [%3d/%3d]\t\t Loss: %.4f Accuracy: %.3f%%'
-                         %(epoch, args.num_epochs_pretrain, batch_idx+1, (pretrainloader.dataset.train_data.shape[0]//args.pretrain_batch_size)+1,
-                           loss.item(), 100.*correct.item()/num_ins))
-        sys.stdout.flush()
+        # Log metrics to wandb
+        log_metrics(epoch, loss.item(), accuracy, phase="pretrain_coarse")
 
 
 def pretrain_fine(epoch, fine_id):
@@ -124,7 +134,6 @@ def pretrain_fine(epoch, fine_id):
 
     optimizer, lr = get_optim(net.fines[fine_id].parameters(), args, mode='preTrain', epoch=epoch)
 
-    print('==> Epoch #%d, LR=%.4f' % (epoch, lr))
     required_train_loader = get_dataLoder(args, classes=net.class_set[fine_id], mode='preTrain')
     predictor = net.fines[fine_id]
     for batch_idx, (inputs, targets) in enumerate(required_train_loader):
@@ -140,12 +149,7 @@ def pretrain_fine(epoch, fine_id):
 
         outputs = predictor(net.share(inputs))
 
-
-        # Ensure the output class count matches the target class count
-        if outputs.size(1) != len(net.class_set[fine_id]):
-            raise ValueError(f"Output class count ({outputs.size(1)}) does not match target class count ({len(net.class_set[fine_id])}).")
-        
-        outputs = net.map_fine_predictions(outputs, fine_id)  # Forward Propagation
+        #outputs = net.map_fine_predictions(outputs, fine_id)  # Forward Propagation
         loss = pred_loss(outputs, targets)
 
         # Check for NaN in loss
@@ -169,14 +173,10 @@ def pretrain_fine(epoch, fine_id):
         num_ins = targets.size(0)
         _, outputs = torch.max(outputs, 1)
         correct = outputs.eq(targets.data).cpu().sum()
-        acc = 100. * correct.item() / num_ins
+        accuracy = 100. * correct.item() / num_ins
 
-        sys.stdout.write('\r')
-        sys.stdout.write('Pre-train Epoch [%3d/%3d] Iter [%3d/%3d]\t\t Loss: %.4f Accuracy: %.3f%%'
-                         % (epoch, args.num_epochs_pretrain, batch_idx + 1,
-                            (required_train_loader.dataset.train_data.shape[0] // args.pretrain_batch_size) + 1,
-                            loss.item(), acc))
-        sys.stdout.flush()
+        # Log metrics to wandb
+        log_metrics(epoch, loss.item(), accuracy, phase=f"pretrain_fine_{fine_id}")
 
 
 def fine_tune(epoch):
@@ -185,12 +185,16 @@ def fine_tune(epoch):
     for i in range(args.num_superclasses):
         net.fines[i].train()
 
+    # Ensure all fine classifiers are on the GPU
+    if cf.use_cuda:
+        for i in range(args.num_superclasses):
+            net.fines[i].cuda()
+
     param = list(net.share.parameters()) + list(net.coarse.parameters())
     for k in range(args.num_superclasses):
         param += list(net.fines[k].parameters())
     optimizer, lr = get_optim(param, args, mode='fineTune', epoch=epoch)
 
-    print('\n==> fine-tune Epoch #%d, LR=%.4f' % (epoch, lr))
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         if cf.use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()  # GPU settings
@@ -203,35 +207,17 @@ def fine_tune(epoch):
         closs = consistency_loss(coarse_outputs, t_k, net.P_d, weight=args.weight_consistency)
         loss = tloss + closs
 
-        # Check for NaN in loss
-        if torch.isnan(loss):
-            print(f"NaN detected in loss at batch {batch_idx}, skipping update.")
-            continue
-
         loss.backward()  # Backward Propagation
-
-        # Add gradient clipping
-        torch.nn.utils.clip_grad_norm_(param, max_norm=5.0)
-
-        # Check for NaN in gradients
-        for name, param in net.named_parameters():
-            if param.grad is not None and torch.isnan(param.grad).any():
-                print(f"NaN detected in gradients of {name} at batch {batch_idx}, skipping update.")
-                return
 
         optimizer.step()
 
         _, predicted = torch.max(outputs.data, 1)
         num_ins = targets.size(0)
         correct = predicted.eq(targets.data).cpu().sum()
-        acc = 100. * correct.item() / num_ins
+        accuracy = 100. * correct.item() / num_ins
 
-        sys.stdout.write('\r')
-        sys.stdout.write('Finetune Epoch [%3d/%3d] Iter [%3d/%3d]\t\t tloss: %.4f closs: %.4f Loss: %.4f Accuracy: %.3f%%'
-                         % (epoch, args.num_epochs_train, batch_idx + 1,
-                            (trainloader.dataset.train_data.shape[0] // args.train_batch_size) + 1,
-                            tloss.item(), closs.item(), loss.item(), acc))
-        sys.stdout.flush()
+        # Log metrics to wandb
+        log_metrics(epoch, loss.item(), accuracy, phase="fine_tune")
 
 
 def test(epoch):
@@ -242,6 +228,7 @@ def test(epoch):
 
     num_ins = 0
     correct = 0
+    total_loss = 0
     for batch_idx, (inputs, targets) in enumerate(testloader):
         if cf.use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda() # GPU settings
@@ -249,13 +236,19 @@ def test(epoch):
         inputs, targets = Variable(inputs), Variable(targets).long()
         outputs = net(inputs)
 
+        loss = pred_loss(outputs, targets)
+        total_loss += loss.item()
+
         _, predicted = torch.max(outputs.data, 1)
         num_ins += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum().item()
 
-    acc = 100.*correct/num_ins
-    print("\nValidation Epoch #%d\t\tAccuracy: %.2f%%" % (epoch, acc))
-    return acc
+    accuracy = 100.*correct/num_ins
+    avg_loss = total_loss / len(testloader)
+
+    # Log metrics to wandb
+    log_metrics(epoch, avg_loss, accuracy, phase="test")
+    return accuracy
 
 
 def independent_test(epoch, mode=999):
@@ -272,6 +265,7 @@ def independent_test(epoch, mode=999):
 
     num_ins = 0
     correct = 0
+    total_loss = 0
     for batch_idx, (inputs, targets) in enumerate(required_loader):
         if cf.use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()  # GPU settings
@@ -282,165 +276,130 @@ def independent_test(epoch, mode=999):
         else:
             outputs = net.fines[mode](net.share(inputs))
 
+        loss = pred_loss(outputs, targets)
+        total_loss += loss.item()
+
         _, predicted = torch.max(outputs.data, 1)
         num_ins += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum().item()
 
-    acc = 100. * correct / num_ins
-    print("\nValidation Epoch #%d\t\tAccuracy: %.2f%%" % (epoch, acc))
-    return acc
+    accuracy = 100. * correct / num_ins
+    avg_loss = total_loss / len(required_loader)
+
+    # Log metrics to wandb
+    log_metrics(epoch, avg_loss, accuracy, phase=f"independent_test_{mode}")
+    return accuracy
 
 
-# Pre-train
-if not args.resume_model:
-    if not args.resume_coarse:
-        print('\n==> Pretrain the coarse model')
-        best_acc = 0
+def pretrain_coarse_model(net, pretrainloader, args):
+    print('\n==> Pretrain the coarse model')
+    best_acc = 0
+    print('Pre-train Coarse')
+    for epoch in range(args.num_epochs_pretrain):
+        pretrain_coarse(epoch)
+        acc = independent_test(epoch, mode=999)
+
+        if acc >= best_acc:
+            print('\nSaving Best model...\t\t\tTop1 = %.2f%%' % (acc))
+            save_point = cf.var_dir + args.dataset
+            if not os.path.isdir(save_point):
+                os.mkdir(save_point)
+            torch.save(net.share.state_dict(), save_point + '/share_params.pkl')
+            torch.save(net.coarse.state_dict(), save_point + '/coarse_params.pkl')
+            best_acc = acc
+
+def initialize_fine_models(net, validloader, args):
+    print('\n==> Doing the spectral clustering')
+    coarse_outputs, coarse_target = get_all_assign(net, validloader)
+    coarse_output = np.argmax(coarse_outputs, 1)
+    print('After pretraining the coarse output:', np.unique(coarse_output), np.unique(coarse_target))
+    F = function.confusion_matrix(coarse_output, coarse_target)
+    D = (1/2)*((np.identity(args.num_classes)-F)+np.transpose(np.identity(args.num_classes)-F))
+    cluster_result = function.spectral_clustering(D, K=args.num_superclasses, gamma=10)
+    print('Cluster_Result:', cluster_result)
+
+    print('\n==> Get Confusion coefficient')
+    P_d = np.zeros((args.num_classes, args.num_superclasses))
+    u_kj = np.zeros((args.num_classes, args.num_superclasses))
+    for superclass in range(args.num_superclasses):
+        P_d[cluster_result == superclass, superclass] = 1
+    B_d_ik = np.dot(coarse_outputs, P_d)
+    net.P_d = torch.from_numpy(P_d)
+    for class_id in range(args.num_classes):
+        u_kj[class_id] = np.mean(B_d_ik[validloader.dataset.train_labels == class_id], 0)
+
+    u_t = 1 / (args.num_superclasses * args.gamma)
+    P_o = (u_kj >= u_t).astype(np.float32)
+    for k in range(args.num_superclasses):
+        if np.sum(P_o[:, k]) == 0:
+            most_related_class = np.argmax(u_kj[:, k])
+            P_o[most_related_class, k] = 1
+            print(f"⚠️ Warning: Coarse class {k} had no fine classes. Assigned fine class {most_related_class} by force.")
+    print(P_o)
+    net.P_o = torch.from_numpy(P_o)
+
+    if args.hard_clustering:
+        for k in range(args.num_superclasses):
+            net.class_set[k] = np.where(cluster_result == k)[0].astype(int)
+    else:
+        for k in range(args.num_superclasses):
+            net.class_set[k] = np.where(P_o[:,k] == 1)[0].astype(int)
+
+    if cf.use_cuda:
+        net.P_d = net.P_d.cuda()
+        net.P_o = net.P_o.cuda()
+
+    print('\n==> Get coarse category consistency')
+    from collections import Counter
+    t_k = torch.zeros((args.num_superclasses))
+    if cf.use_cuda: t_k = t_k.cuda()
+    c = Counter(trainloader.dataset.train_labels)
+    for k in range(args.num_superclasses):
+        t_k[k] = sum([c[i] for i in net.class_set[k]])
+    t_k = t_k/torch.sum(t_k)
+
+    print('\nSaving Parameters...' )
+    state = {
+        'net.P_d': net.P_d if hasattr(net, 'P_d') else None,
+        'net.P_o': net.P_o if hasattr(net, 'P_o') else None,
+        'net.class_set': net.class_set,
+        't_k': t_k,
+    }
+    save_point = cf.model_dir + args.dataset
+    if not os.path.isdir(save_point):
+        os.mkdir(save_point)
+    torch.save(state, save_point + '/parameters.pkl')
+
+    print('\n==> Initialize fine models')
+    print("class_set:", net.class_set)
+    
+    net.assign_fine_classes()
+
+    if cf.use_cuda:
+        for i in range(args.num_superclasses):
+            net.fines[i].cuda()
+
+def pretrain_fine_models(net, args):
+    print('\n\n==> Train fine independents')
+    best_acc = np.zeros((args.num_superclasses,))
+    for fine_id in range(args.num_superclasses):
+        print('\nPre-train Fine #%d' % fine_id)
         for epoch in range(args.num_epochs_pretrain):
-            print('Pre-train Coarse')
-            pretrain_coarse(epoch)
-            acc = independent_test(epoch, mode=999)
+            
+            pretrain_fine(epoch, fine_id)
+            acc = independent_test(epoch, mode=fine_id)
 
-            if acc >= best_acc:
+            if acc >= best_acc[fine_id]:
                 print('\nSaving Best model...\t\t\tTop1 = %.2f%%' % (acc))
+                net_params = net.fines[fine_id].state_dict()
                 save_point = cf.var_dir + args.dataset
                 if not os.path.isdir(save_point):
                     os.mkdir(save_point)
-                torch.save(net.share.state_dict(), save_point + '/share_params.pkl')
-                torch.save(net.coarse.state_dict(), save_point + '/coarse_params.pkl')
-                best_acc = acc
+                torch.save(net_params, save_point + '/fine_%d.pkl' % fine_id)
+                best_acc[fine_id] = acc
 
-    # No matter resume or not
-    # Load the best parameter
-    print('\n\n==> Get the best coarse from checkpoint')
-    map_location = 'cuda' if cf.use_cuda else 'cpu'
-    net_share_params = torch.load(cf.var_dir + args.dataset + '/share_params.pkl', map_location=map_location)
-    net_coarse_params = torch.load(cf.var_dir + args.dataset + '/coarse_params.pkl', map_location=map_location)
-    net.share.load_state_dict(net_share_params)
-    net.coarse.load_state_dict(net_coarse_params)
-
-    if not args.resume_fines:
-        print('\n==> Doing the spectural clusturing')
-        coarse_outputs, coarse_target = get_all_assign(net, validloader)
-        coarse_output = np.argmax(coarse_outputs, 1)
-        print('After pretraining the coarse output:', np.unique(coarse_output), np.unique(coarse_target))
-        F = function.confusion_matrix(coarse_output, coarse_target)
-        D = (1/2)*((np.identity(args.num_classes)-F)+np.transpose(np.identity(args.num_classes)-F))
-        cluster_result = function.spectral_clustering(D, K=args.num_superclasses, gamma=10)
-        # print coarse category and related fine categories
-        print('Cluster_Result:', cluster_result)
-    
-
-        
-
-        print('\n==> Get Confusion coefficient')
-        P_d = np.zeros((args.num_classes, args.num_superclasses))
-        u_kj = np.zeros((args.num_classes, args.num_superclasses))
-        for superclass in range(args.num_superclasses):
-            P_d[cluster_result == superclass, superclass] = 1
-        B_d_ik = np.dot(coarse_outputs, P_d)
-        net.P_d = torch.from_numpy(P_d)
-        for class_id in range(args.num_classes):
-            u_kj[class_id] = np.mean(B_d_ik[validloader.dataset.train_labels == class_id], 0)
-
-
-        u_t = 1 / (args.num_superclasses * args.gamma)
-        P_o = (u_kj >= u_t).astype(np.float32)
-        # improve：
-        # in order to make sure each superclass has at least min_classes classes
-        #P_o shape: (num_classes, num_superclasses)
-        for k in range(args.num_superclasses):
-            if np.sum(P_o[:, k]) == 0:
-                # 找到 coarse class k 最相关的 fine class（u_kj 的这一列中最大值）
-                most_related_class = np.argmax(u_kj[:, k])
-                P_o[most_related_class, k] = 1
-                print(f"⚠️ Warning: Coarse class {k} had no fine classes. Assigned fine class {most_related_class} by force.")
-            
-        print(P_o) # thresholded coarse category assignment matrix
-        net.P_o = torch.from_numpy(P_o)
-
-        if args.hard_clustering:
-            # Hard clustering: directly use cluster results
-            for k in range(args.num_superclasses):
-                net.class_set[k] = np.where(cluster_result == k)[0].astype(int)
-            
-        else:
-            for k in range(args.num_superclasses):
-                net.class_set[k] = np.where(P_o[:,k] == 1)[0].astype(int)
-            
-        if cf.use_cuda:
-            net.P_d = net.P_d.cuda()
-            net.P_o = net.P_o.cuda()
-
-
-        print('\n==> Get coarse category consistency')
-        from collections import Counter
-        t_k = torch.zeros((args.num_superclasses))
-        if cf.use_cuda: t_k = t_k.cuda()
-        c = Counter(trainloader.dataset.train_labels)
-        for k in range(args.num_superclasses):
-            t_k[k] = sum([c[i] for i in net.class_set[k]])
-        t_k = t_k/torch.sum(t_k)
-
-        print('\nSaving Parameters...' )
-        state = {
-            'net.P_d': net.P_d if hasattr(net, 'P_d') else None,
-            'net.P_o': net.P_o if hasattr(net, 'P_o') else None,
-            'net.class_set': net.class_set,
-            't_k': t_k,
-        }
-        save_point = cf.model_dir + args.dataset
-        if not os.path.isdir(save_point):
-            os.mkdir(save_point)
-        torch.save(state, save_point + '/parameters.pkl')
-
-
-        #Initialize fine models
-        print('\n==> Initialize fine models')
-        print("class_set:", net.class_set)
-        net.assign_fine_classes()
-
-        if cf.use_cuda:
-            for i in range(args.num_superclasses):
-                net.fines[i].cuda()
-            
-        print('\n\n==> train fine independents')
-        best_acc = np.zeros((args.num_superclasses,))
-        for fine_id in range(args.num_superclasses):
-            for epoch in range(args.num_epochs_pretrain):
-                print('\nPre-train Fine #%d'%fine_id)
-                pretrain_fine(epoch, fine_id)
-                acc = independent_test(epoch, mode=fine_id)
-
-                if acc >= best_acc[fine_id]:
-                    print('\nSaving Best model...\t\t\tTop1 = %.2f%%' % (acc))
-                    net_params = net.fines[fine_id].state_dict()
-                    save_point = cf.var_dir + args.dataset
-                    if not os.path.isdir(save_point):
-                        os.mkdir(save_point)
-                    torch.save(net_params, save_point + '/fine_%d.pkl'%fine_id)
-                    best_acc[fine_id] = acc
-
-    else:
-        # If resume, load the corresponding parameters
-        print('\n\n==> Get parameters from checkpoint')
-        map_location = 'cuda' if cf.use_cuda else 'cpu'
-        checkpoint = torch.load(cf.model_dir + args.dataset + '/parameters.pkl', map_location=map_location)
-        net.P_d = checkpoint['net.P_d']
-        net.P_o = checkpoint['net.P_o']
-        net.class_set = checkpoint['net.class_set']
-        t_k = checkpoint['t_k']
-
-    # No matter resume or not
-    # Load the best parameter
-    print('\n\n==> Get the best fines from checkpoint')
-    for fine_id in range(args.num_superclasses):
-        map_location = 'cuda' if cf.use_cuda else 'cpu'
-        net_fine_params = torch.load(cf.var_dir + args.dataset + '/fine_%d.pkl'%fine_id, map_location=map_location)
-        net.fines[fine_id].load_state_dict(net_fine_params)
-
-
-    print('\n\n==> fine_tune the model')
+def fine_tune_model(net, trainloader, args):
+    print('\n\n==> Fine-tune the model')
     best_acc = 0
     for epoch in range(1, args.num_epochs_train + 1):
         fine_tune(epoch)
@@ -454,29 +413,84 @@ if not args.resume_model:
             torch.save(net.state_dict(), save_point + '/over_all_model.pkl')
             best_acc = acc
 
-# No matter resume or not
-# Load the best whole model
-map_location = 'cuda' if cf.use_cuda else 'cpu'
-net = torch.load(cf.model_dir + args.dataset + '/over_all_model.pkl', map_location=map_location)
-
+def resume_model(net, args):
+    print('\n\n==> Resuming the whole model from checkpoint')
+    map_location = 'cuda' if cf.use_cuda else 'cpu'
+    net.load_state_dict(torch.load(cf.model_dir + args.dataset + '/over_all_model.pkl', map_location=map_location))
+    checkpoint = torch.load(cf.model_dir + args.dataset + '/parameters.pkl', map_location=map_location)
+    net.P_d = checkpoint['net.P_d']
+    net.P_o = checkpoint['net.P_o']
+    net.class_set = checkpoint['net.class_set']
+    t_k = checkpoint['t_k']
+    net.assign_fine_classes()
+    for fine_id in range(args.num_superclasses):
+        net_fine_params = torch.load(cf.var_dir + args.dataset + f'/fine_{fine_id}.pkl', map_location=map_location)
+        net.fines[fine_id].load_state_dict(net_fine_params)
+    if cf.use_cuda:
+        net.share.cuda()
+        net.coarse.cuda()
+        for i in range(args.num_superclasses):
+            net.fines[i].cuda()
 
 # Final test
-net.share.eval()
-net.coarse.eval()
-for i in range(args.num_superclasses):
-    net.fines[i].eval()
+def final_test(net, testloader):
+    print('\nFinal test')
+    net.share.eval()
+    net.coarse.eval()
+    for i in range(args.num_superclasses):
+        net.fines[i].eval()
+    num_ins = 0
+    correct = 0
+    total_loss = 0
+    for batch_idx, (inputs, targets) in enumerate(testloader):
+        if cf.use_cuda:
+            inputs, targets = inputs.cuda(), targets.cuda()
+        inputs, targets = Variable(inputs), Variable(targets).long()
+        outputs = net(inputs)
 
-num_ins = 0
-correct = 0
-for batch_idx, (inputs, targets) in enumerate(testloader):
-    if cf.use_cuda:
-        inputs, targets = inputs.cuda(), targets.cuda()  # GPU settings
-    inputs, targets = Variable(inputs), Variable(targets).long()
+        loss = pred_loss(outputs, targets)
+        total_loss += loss.item()
 
-    outputs = net(inputs)
+        _, predicted = torch.max(outputs.data, 1)
+        num_ins += targets.size(0)
+        correct += predicted.eq(targets.data).cpu().sum().item()
 
-    _, predicted = torch.max(outputs.data, 1)
-    num_ins += targets.size(0)
-    correct += predicted.eq(targets.data).cpu().sum().item()
-acc = 100. * correct / num_ins
-print("\nThe final performance @Accuracy: %.2f%%" % acc)
+    accuracy = 100. * correct / num_ins
+    avg_loss = total_loss / len(testloader)
+
+    # Log final metrics to wandb
+    wandb.log({"final_accuracy": accuracy, "final_loss": avg_loss})
+    print("\nThe final performance @Accuracy: %.2f%%" % accuracy)
+
+# Main workflow
+if not args.resume_model:
+    if not args.resume_coarse:
+        pretrain_coarse_model(net, pretrainloader, args)
+    print('\n\n==> Get the best coarse from checkpoint')
+    map_location = 'cuda' if cf.use_cuda else 'cpu'
+    net_share_params = torch.load(cf.var_dir + args.dataset + '/share_params.pkl', map_location=map_location)
+    net_coarse_params = torch.load(cf.var_dir + args.dataset + '/coarse_params.pkl', map_location=map_location)
+    net.share.load_state_dict(net_share_params)
+    net.coarse.load_state_dict(net_coarse_params)
+    if not args.resume_fines:
+        initialize_fine_models(net, validloader, args)
+        pretrain_fine_models(net, args)
+    else:
+        print('\n\n==> Get parameters from checkpoint')
+        map_location = 'cuda' if cf.use_cuda else 'cpu'
+        checkpoint = torch.load(cf.model_dir + args.dataset + '/parameters.pkl', map_location=map_location)
+        net.P_d = checkpoint['net.P_d']
+        net.P_o = checkpoint['net.P_o']
+        net.class_set = checkpoint['net.class_set']
+        t_k = checkpoint['t_k']
+        print('\n\n==> Get the best fines from checkpoint')
+        net.assign_fine_classes()
+        for fine_id in range(args.num_superclasses):
+            map_location = 'cuda' if cf.use_cuda else 'cpu'
+            net_fine_params = torch.load(cf.var_dir + args.dataset + '/fine_%d.pkl'%fine_id, map_location=map_location)
+            net.fines[fine_id].load_state_dict(net_fine_params)
+    fine_tune_model(net, trainloader, args)
+else:
+    resume_model(net, args)
+
+final_test(net, testloader)
