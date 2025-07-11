@@ -23,9 +23,10 @@ from .context import ctx_noparamgrad_and_eval
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def focal_loss(logits, targets, gamma=2.0, reduction='mean'):
+
+def focal_loss_with_pt(logits, targets, gamma=2.0, reduction='mean'):
     """
-    Multi-class focal loss.
+    Multi-class focal loss with pt recording.
     logits: [N, C]
     targets: [N]
     """
@@ -40,19 +41,19 @@ def focal_loss(logits, targets, gamma=2.0, reduction='mean'):
     loss = -focal_term * log_pt                    # [N]
 
     if reduction == 'mean':
-        return loss.mean()
+        return loss.mean(), pt
     elif reduction == 'sum':
-        return loss.sum()
+        return loss.sum(), pt
     else:
-        return loss  # no reduction
+        return loss, pt  # no reduction
     
 
 class TreeEnsemble(object):
     def __init__(self, 
         info, args,
-        alpha1: float = 0.9,
-        alpha2: float = 0.1,
-        alpha3: float = 0.1,
+        alpha1: float = 1,
+        alpha2: float = 1,
+        alpha3: float = 1,
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,
         gamma: float = 2.0,  # Focal loss gamma parameter
@@ -171,6 +172,8 @@ class TreeEnsemble(object):
             self.alpha3 = alpha23_total / (1 + balance_ratio)
 
             return self.alpha1, self.alpha2, self.alpha3
+        
+        
 
     def forward(self, x):
         root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
@@ -231,17 +234,12 @@ class TreeEnsemble(object):
     
     def loss_fn(self, logits_set, y):
         """
-        Loss function for the model.
-        nn.CrossEntropyLoss(reduction='mean'), no need to divide by batch size.
+        Loss function for the model with pt recording.
         """
-        root_logits, logits_animal, logits_vehicle = logits_set #10dim, 10dim, 10dim 
-      
-        root_loss = self.criterion(root_logits, y)
-        # set to 0
-        #root_loss = torch.tensor(0.0, device=y.device)
-
-        subroot_loss_animal = torch.tensor(0.0, device=y.device)
-        subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
+        root_logits, logits_animal, logits_vehicle = logits_set
+        root_loss, root_pt = focal_loss_with_pt(root_logits, y, gamma=self.gamma)
+        subroot_loss_animal, subroot_pt_animal = torch.tensor(0.0, device=y.device), torch.tensor([], device=y.device)
+        subroot_loss_vehicle, subroot_pt_vehicle = torch.tensor(0.0, device=y.device), torch.tensor([], device=y.device)
 
         animal_classes_index = torch.tensor(animal_classes, device=y.device)
         vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
@@ -250,23 +248,18 @@ class TreeEnsemble(object):
         is_vehicle = torch.isin(y, vehicle_classes_index)
 
         if is_animal.any():
-            subroot_loss_animal = self.criterion(logits_animal[is_animal], y[is_animal])
+            subroot_loss_animal, subroot_pt_animal = focal_loss_with_pt(logits_animal[is_animal], y[is_animal], gamma=self.gamma)
         if is_vehicle.any():
-            subroot_loss_vehicle = self.criterion(logits_vehicle[is_vehicle], y[is_vehicle])
+            subroot_loss_vehicle, subroot_pt_vehicle = focal_loss_with_pt(logits_vehicle[is_vehicle], y[is_vehicle], gamma=self.gamma)
 
-        # add kendall weight loss
-        # loss = self.alpha1 * (root_loss/torch.exp(-self.s_r) + self.s_r) + \
-        #        self.alpha2 * (subroot_loss_animal/torch.exp(-self.s_a) + self.s_a) + \
-        #        self.alpha3 * (subroot_loss_vehicle/torch.exp(-self.s_v) + self.s_v)
         loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle
-        
-        return loss, root_loss, subroot_loss_animal, subroot_loss_vehicle
+        return loss, root_loss, subroot_loss_animal, subroot_loss_vehicle, root_pt, subroot_pt_animal, subroot_pt_vehicle
     
     def wrap_loss_fn(self, logits_set, y):
         """
         Wrapper for loss function to return only the loss value.
         """
-        loss, _, _, _ = self.loss_fn(logits_set, y)
+        loss, _, _, _, _, _, _ = self.loss_fn(logits_set, y)
         return loss
     
     def KL_loss_fn(self, adv_logits_set, logits_set, y):
@@ -365,29 +358,35 @@ class TreeEnsemble(object):
 
     def standard_loss(self, x, y):
         """
-        Standard training.
+        Standard training with pt recording.
         """
         self.optimizer.zero_grad()
         out = self.forward(x)
-        root_logits, subroot_animal, subroot_veicle = self.model(x)
-        loss, root_loss, subroot_loss_animal, subroot_loss_vehicle = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y)
-        
+        root_logits, subroot_animal, subroot_vehicle = self.model(x)
+        loss, root_loss, subroot_loss_animal, subroot_loss_vehicle, root_pt, subroot_pt_animal, subroot_pt_vehicle = self.loss_fn(
+            [root_logits, subroot_animal, subroot_vehicle], y
+        )
+
         preds = out.detach()
-        batch_metrics = {'loss': loss.item(),
-                        'root_loss': root_loss.item(),
-                        'subroot_loss_animal': subroot_loss_animal.item(),
-                        'subroot_loss_vehicle': subroot_loss_vehicle.item(),
-                        'clean_acc': accuracy(y, preds)}
+        batch_metrics = {
+            'loss': loss.item(),
+            'root_loss': root_loss.item(),
+            'subroot_loss_animal': subroot_loss_animal.item(),
+            'subroot_loss_vehicle': subroot_loss_vehicle.item(),
+            'clean_acc': accuracy(y, preds),
+            'root_pt': root_pt.mean().item(),
+            'subroot_pt_animal': subroot_pt_animal.mean().item() if len(subroot_pt_animal) > 0 else None,
+            'subroot_pt_vehicle': subroot_pt_vehicle.mean().item() if len(subroot_pt_vehicle) > 0 else None,
+        }
         return loss, batch_metrics
 
     def adversarial_loss(self, x, y):
         """
-        Adversarial training (Madry et al, 2017).
+        Adversarial training with pt recording.
         """
         with ctx_noparamgrad_and_eval(self.model):
             x_adv, _ = self.attack.perturb(x, y)
 
-        #self.model.train()
         self.optimizer.zero_grad()
         if self.params.keep_clean:
             x_adv = torch.cat((x, x_adv), dim=0)
@@ -395,19 +394,26 @@ class TreeEnsemble(object):
         else:
             y_adv = y
         out = self.forward(x_adv)
-        root_logits, subroot_animal, subroot_veicle = self.model(x_adv)
-        loss, root_loss, subroot_loss_animal, subroot_loss_vehicle = self.loss_fn([root_logits, subroot_animal, subroot_veicle], y_adv)
-        
+        root_logits, subroot_animal, subroot_vehicle = self.model(x_adv)
+        loss, root_loss, subroot_loss_animal, subroot_loss_vehicle, root_pt, subroot_pt_animal, subroot_pt_vehicle = self.loss_fn(
+            [root_logits, subroot_animal, subroot_vehicle], y_adv
+        )
+
         preds = out.detach()
-        batch_metrics = {'loss': loss.item(), 
-                        'root_loss': root_loss.item(),
-                        'subroot_loss_animal': subroot_loss_animal.item(),
-                        'subroot_loss_vehicle': subroot_loss_vehicle.item()}
+        batch_metrics = {
+            'loss': loss.item(),
+            'root_loss': root_loss.item(),
+            'subroot_loss_animal': subroot_loss_animal.item(),
+            'subroot_loss_vehicle': subroot_loss_vehicle.item(),
+            'root_pt': root_pt.mean().item(),
+            'subroot_pt_animal': subroot_pt_animal.mean().item() if len(subroot_pt_animal) > 0 else None,
+            'subroot_pt_vehicle': subroot_pt_vehicle.mean().item() if len(subroot_pt_vehicle) > 0 else None,
+        }
         if self.params.keep_clean:
             preds_clean, preds_adv = preds[:len(x)], preds[len(x):]
             batch_metrics.update({'clean_acc': accuracy(y, preds_clean), 'adversarial_acc': accuracy(y, preds_adv)})
         else:
-            batch_metrics.update({'adversarial_acc': accuracy(y, preds)})    
+            batch_metrics.update({'adversarial_acc': accuracy(y, preds)})
         return loss, batch_metrics
     
     def trades_loss(self, x, y, beta):
