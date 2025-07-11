@@ -23,6 +23,29 @@ from .context import ctx_noparamgrad_and_eval
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+def focal_loss(logits, targets, gamma=2.0, reduction='mean'):
+    """
+    Multi-class focal loss.
+    logits: [N, C]
+    targets: [N]
+    """
+    log_probs = F.log_softmax(logits, dim=1)  # [N, C]
+    probs = torch.exp(log_probs)              # [N, C]
+    targets_one_hot = F.one_hot(targets, num_classes=logits.size(1))  # [N, C]
+
+    pt = (probs * targets_one_hot).sum(dim=1)      # [N]
+    log_pt = (log_probs * targets_one_hot).sum(dim=1)  # [N]
+
+    focal_term = (1 - pt) ** gamma
+    loss = -focal_term * log_pt                    # [N]
+
+    if reduction == 'mean':
+        return loss.mean()
+    elif reduction == 'sum':
+        return loss.sum()
+    else:
+        return loss  # no reduction
+    
 
 class TreeEnsemble(object):
     def __init__(self, 
@@ -32,6 +55,7 @@ class TreeEnsemble(object):
         alpha3: float = 0.1,
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,
+        gamma: float = 2.0,  # Focal loss gamma parameter
     ):
         
         self.model = create_model(args.model, args.normalize, info, device)
@@ -39,6 +63,7 @@ class TreeEnsemble(object):
         self.alpha1 = alpha1
         self.alpha2 = alpha2
         self.alpha3 = alpha3
+        self.gamma = gamma  # Focal loss gamma parameter
 
         self.max_epochs = max_epochs
         self.alpha_update_strategy = alpha_update_strategy or {
@@ -47,11 +72,12 @@ class TreeEnsemble(object):
         }
 
         self.params = args
-        self.criterion = nn.CrossEntropyLoss(reduction='mean')
+        #self.criterion = nn.CrossEntropyLoss(reduction='mean')
+        self.criterion = focal_loss 
         # for kendall loss weight, set as trainable parameter 
-        self.s_r = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
-        self.s_a = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
-        self.s_v = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
+        # self.s_r = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
+        # self.s_a = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
+        # self.s_v = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
 
         self.init_optimizer(self.params.num_adv_epochs)
         if self.params.pretrained_file is not None:
@@ -210,9 +236,9 @@ class TreeEnsemble(object):
         """
         root_logits, logits_animal, logits_vehicle = logits_set #10dim, 10dim, 10dim 
       
-        #root_loss = self.criterion(root_logits, y)
+        root_loss = self.criterion(root_logits, y)
         # set to 0
-        root_loss = torch.tensor(0.0, device=y.device)
+        #root_loss = torch.tensor(0.0, device=y.device)
 
         subroot_loss_animal = torch.tensor(0.0, device=y.device)
         subroot_loss_vehicle = torch.tensor(0.0, device=y.device)
@@ -229,9 +255,10 @@ class TreeEnsemble(object):
             subroot_loss_vehicle = self.criterion(logits_vehicle[is_vehicle], y[is_vehicle])
 
         # add kendall weight loss
-        loss = self.alpha1 * (root_loss/torch.exp(-self.s_r) + self.s_r) + \
-               self.alpha2 * (subroot_loss_animal/torch.exp(-self.s_a) + self.s_a) + \
-               self.alpha3 * (subroot_loss_vehicle/torch.exp(-self.s_v) + self.s_v)
+        # loss = self.alpha1 * (root_loss/torch.exp(-self.s_r) + self.s_r) + \
+        #        self.alpha2 * (subroot_loss_animal/torch.exp(-self.s_a) + self.s_a) + \
+        #        self.alpha3 * (subroot_loss_vehicle/torch.exp(-self.s_v) + self.s_v)
+        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle
         
         return loss, root_loss, subroot_loss_animal, subroot_loss_vehicle
     
