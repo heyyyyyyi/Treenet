@@ -225,8 +225,8 @@ class LightTreeResNet(nn.Module):
         # logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle[:, :-1]
         # unknown_value = subroot_logits_vehicle[:, -1] / len(animal_classes)
         # logits_vehicle[:, animal_classes_index] = unknown_value.unsqueeze(1).expand(-1, len(animal_classes))
-        logits_animal[:, animal_classes_index] = subroot_logits_animal
-        logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle
+        logits_animal[:, animal_classes_index] = subroot_logits_animal[:,:]
+        logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle[:,:]
 
         return root_logits, logits_animal, logits_vehicle
 

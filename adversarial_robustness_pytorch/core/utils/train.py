@@ -191,6 +191,18 @@ class Trainer(object):
                                         beta=beta, attack=self.params.attack)
         return loss, batch_metrics  
     
+    def eval_test(self, x, adversarial=False):
+        """
+        Evaluate performance of the model.
+        """
+        x = x.to(device)
+        if adversarial:
+            with ctx_noparamgrad_and_eval(self.model):
+                x_adv, _ = self.eval_attack.perturb(x, y)            
+            out = self.model(x_adv)
+        else:
+            out = self.model(x)
+        return out 
     
     def eval(self, dataloader, adversarial=False):
         """

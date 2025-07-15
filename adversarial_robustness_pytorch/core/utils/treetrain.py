@@ -74,7 +74,7 @@ class TreeEnsemble(object):
 
         self.params = args
         #self.criterion = nn.CrossEntropyLoss(reduction='mean')
-        self.criterion = focal_loss_with_pt 
+        self.criterion = focal_loss_with_pt
         # for kendall loss weight, set as trainable parameter 
         # self.s_r = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
         # self.s_a = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
@@ -154,25 +154,44 @@ class TreeEnsemble(object):
         else:
             self.scheduler = None
 
-    def update_alphas(self, current_epoch: int, root_acc: float):
-        """
-        Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
-        """
-        progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
-        self.alpha1 = max(0.0, 0.9 * (1 - progress))  # Decrease alpha1 from 0.9 to 0
-        alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
+    # def update_alphas(self, current_epoch: int, root_acc: float):
+    #     """
+    #     linear update: Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
+    #     """
+    #     # linear update
+    #     progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
+    #     self.alpha1 = 0.9 - 0.8 * progress)  # Decrease alpha1 from 0.9 to 0
+    #     alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
+    
+    #     # Use a custom strategy if provided
+    #     if callable(self.alpha_update_strategy):
+    #         self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
+    #     else:
+    #         # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+    #         balance_ratio = self.alpha_update_strategy["balance_ratio"]
+    #         self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+    #         self.alpha3 = alpha23_total / (1 + balance_ratio)
 
-        # Use a custom strategy if provided
-        if callable(self.alpha_update_strategy):
-            self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
-        else:
-            # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
-            balance_ratio = self.alpha_update_strategy["balance_ratio"]
-            self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-            self.alpha3 = alpha23_total / (1 + balance_ratio)
+    #         return self.alpha1, self.alpha2, self.alpha3
+    def update_alphas(self, current_epoch: int, decay_factor: 0.98):
+        """
+        exponential update: Dynamically update alpha1, alpha2, and alpha3
+        """
+        self.alpha1 *= decay_factor
 
-            return self.alpha1, self.alpha2, self.alpha3
-        
+        # progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
+        # alpha23_total = 0.1 + 0.8 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
+
+        # if callable(self.alpha_update_strategy):
+        #     # Use a custom strategy if provided
+        #     self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
+        # else:
+        #     # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
+        #     balance_ratio = self.alpha_update_strategy["balance_ratio"]
+        #     self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
+        #     self.alpha3 = alpha23_total / (1 + balance_ratio)
+
+        return self.alpha1, self.alpha2, self.alpha3
         
 
     def forward(self, x):

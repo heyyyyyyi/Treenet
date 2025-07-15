@@ -35,6 +35,8 @@ _WANDB_PROJECT = "ablation_test"
 # Setup
 
 parse = parser_train()
+# add args decay_foctor
+parse.add_argument('--decay_factor', type=float, default=0.98, help='Decay factor for alpha values.')
 args = parse.parse_args()
 
 wandb.init(
@@ -135,7 +137,7 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     # root_acc_animal = test_res['root_acc_animal']
     # root_acc_vehicle = test_res['root_acc_vehicle']
 
-    #alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, root_acc)
+    alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, args.decay_factor)
 
     logger.log('Loss: {:.4f}.\tRoot LR: {:.6f}.\tSubroot Animal LR: {:.6f}.\tSubroot Vehicle LR: {:.6f}'.format(
         res['loss'], root_lr, subroot_animal_lr, subroot_vehicle_lr
