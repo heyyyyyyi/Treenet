@@ -66,7 +66,7 @@ class TreeEnsemble(object):
         self.alpha3 = alpha3
         self.gamma = gamma  # Focal loss gamma parameter
 
-        self.max_epochs = max_epochs
+        self.max_epochs = args.num_adv_epochs
         self.alpha_update_strategy = alpha_update_strategy or {
             "balance_ratio": 1 / 1,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
             # "balance_ratio": 1 / 1,
@@ -74,7 +74,7 @@ class TreeEnsemble(object):
 
         self.params = args
         #self.criterion = nn.CrossEntropyLoss(reduction='mean')
-        self.criterion = focal_loss 
+        self.criterion = focal_loss_with_pt 
         # for kendall loss weight, set as trainable parameter 
         # self.s_r = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
         # self.s_a = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
@@ -111,7 +111,7 @@ class TreeEnsemble(object):
             {"params": self.model.root_model.parameters(), "lr": self.params.lr },  # root: 学得稳定，稍小
             {"params": self.model.subroot_animal.parameters(), "lr": self.params.lr},    # subroot-animal: 正常
             {"params": self.model.subroot_vehicle.parameters(), "lr": self.params.lr },  # vehicle 学得慢一点，可以提速
-            {"params": [self.s_r, self.s_a, self.s_v], "lr": self.params.lr }  # kendall loss weight
+            #{"params": [self.s_r, self.s_a, self.s_v], "lr": self.params.lr }  # kendall loss weight
         ],
             weight_decay=self.params.weight_decay, 
             momentum=0.9, 
@@ -133,7 +133,7 @@ class TreeEnsemble(object):
             update_steps = int(np.floor(num_samples / self.params.batch_size) + 1)
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
-                max_lr=[self.params.lr , self.params.lr , self.params.lr , self.params.lr ],
+                max_lr=[self.params.lr , self.params.lr , self.params.lr  ],
                 pct_start=0.25,
                 steps_per_epoch=update_steps,
                 epochs=int(num_epochs),
@@ -147,7 +147,7 @@ class TreeEnsemble(object):
         elif self.params.scheduler == 'cosinew':
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
-                max_lr=[self.params.lr , self.params.lr , self.params.lr , self.params.lr ],
+                max_lr=[self.params.lr , self.params.lr , self.params.lr ],
                 pct_start=0.025,
                 total_steps=int(num_epochs),
             )
@@ -252,7 +252,8 @@ class TreeEnsemble(object):
         if is_vehicle.any():
             subroot_loss_vehicle, subroot_pt_vehicle = focal_loss_with_pt(logits_vehicle[is_vehicle], y[is_vehicle], gamma=self.gamma)
 
-        loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle
+        #loss = self.alpha1 * root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle
+        loss = root_loss + 0.6*subroot_loss_animal + 0.4*subroot_loss_vehicle
         return loss, root_loss, subroot_loss_animal, subroot_loss_vehicle, root_pt, subroot_pt_animal, subroot_pt_vehicle
     
     def wrap_loss_fn(self, logits_set, y):

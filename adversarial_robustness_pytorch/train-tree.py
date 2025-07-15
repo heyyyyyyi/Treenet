@@ -29,7 +29,7 @@ from core.utils import seed
 import wandb
 
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
-_WANDB_PROJECT = "tree_test"
+_WANDB_PROJECT = "ablation_test"
 
 
 # Setup
@@ -135,7 +135,7 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     # root_acc_animal = test_res['root_acc_animal']
     # root_acc_vehicle = test_res['root_acc_vehicle']
 
-    alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, root_acc)
+    #alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, root_acc)
 
     logger.log('Loss: {:.4f}.\tRoot LR: {:.6f}.\tSubroot Animal LR: {:.6f}.\tSubroot Vehicle LR: {:.6f}'.format(
         res['loss'], root_lr, subroot_animal_lr, subroot_vehicle_lr
@@ -189,8 +189,8 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
     
     # log alpha1, alpha2, alpha3
-    logger.log('Alpha1: {:.4f}.\tAlpha2: {:.4f}.\tAlpha3: {:.4f}'.format(alpha1, alpha2, alpha3))
-    epoch_metrics.update({'alpha1': alpha1, 'alpha2': alpha2, 'alpha3': alpha3})
+    # logger.log('Alpha1: {:.4f}.\tAlpha2: {:.4f}.\tAlpha3: {:.4f}'.format(alpha1, alpha2, alpha3))
+    # epoch_metrics.update({'alpha1': alpha1, 'alpha2': alpha2, 'alpha3': alpha3})
 
     if test_adv_acc >= old_score[1]:
         old_score[0], old_score[1] = test_acc, test_adv_acc
