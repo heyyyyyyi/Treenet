@@ -25,6 +25,7 @@ from core.utils import seed
 from core import animal_classes, vehicle_classes
 
 import wandb
+from gowal21uncovering.utils import WATrainer
 
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
 _WANDB_PROJECT = "baseline-adv-resnet20"
@@ -87,7 +88,11 @@ print(train_dataloader.dataset.data.shape)
 print(test_dataloader.dataset.data.shape)
 
 
-trainer = Trainer(info, args)
+if args.tau:
+    print ('Using WA.')
+    trainer = WATrainer(info, args)
+else:
+    trainer = Trainer(info, args)
 
 logger.log("Model Summary:")
 try:
@@ -103,7 +108,6 @@ logger.log("Total Trainable Parameters: {}".format(count_parameters(trainer.mode
 
 
 last_lr = args.lr
-
 
 if NUM_ADV_EPOCHS > 0:
     logger.log('\n\n')
