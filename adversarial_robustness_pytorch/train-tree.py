@@ -39,6 +39,8 @@ _WANDB_PROJECT = "ablation_test"
 parse = parser_train()
 # add args decay_foctor
 parse.add_argument('--decay_factor', type=float, default=0.98, help='Decay factor for alpha values.')
+parse.add_argumen('--strategy', type=str, default='exponential', choices=['exponential', 'linear'], help='Strategy for alpha decay.')
+
 args = parse.parse_args()
 
 wandb.init(
@@ -229,21 +231,21 @@ wandb.summary["final_test_clean_acc"] = old_score[0]
 wandb.summary["final_test_adv_acc"] = old_score[1]
 
 # 自动调用 eval-rb.py
-logger.log('Starting RobustBench evaluation...')
-rb_result = subprocess.run(
-    ['python', 'eval-rb.py', '--desc', args.desc, '--log-dir', args.log_dir, '--data-dir', args.data_dir],
-    capture_output=True, text=True
-)
-logger.log(rb_result.stdout)
+# logger.log('Starting RobustBench evaluation...')
+# rb_result = subprocess.run(
+#     ['python', 'eval-rb.py', '--desc', args.desc, '--log-dir', args.log_dir, '--data-dir', args.data_dir],
+#     capture_output=True, text=True
+# )
+# logger.log(rb_result.stdout)
 
-# Parse and log RobustBench results to wandb
-for line in rb_result.stdout.splitlines():
-    if "Clean Accuracy" in line:
-        clean_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
-        wandb.summary["robustbench_clean_acc"] = clean_acc
-    if "Robust Accuracy" in line:
-        robust_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
-        wandb.summary["robustbench_robust_acc"] = robust_acc
+# # Parse and log RobustBench results to wandb
+# for line in rb_result.stdout.splitlines():
+#     if "Clean Accuracy" in line:
+#         clean_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
+#         wandb.summary["robustbench_clean_acc"] = clean_acc
+#     if "Robust Accuracy" in line:
+#         robust_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
+#         wandb.summary["robustbench_robust_acc"] = robust_acc
 
 # 自动调用 eval-aa.py
 logger.log('Starting AutoAttack evaluation...')

@@ -10,16 +10,15 @@ import torch.nn.functional as F
 
 from core.attacks import create_attack
 from core.metrics import accuracy, binary_accuracy, subclass_accuracy
-from core.models import create_model
+from .model import create_model
 
-from core.models import Normalization
-from .mart import mart_loss, mart_tree_loss
-from .rst import CosineLR
-from .trades import trades_loss, trades_tree_loss
+from core.utils.mart import mart_loss, mart_tree_loss
+from core.utils.rst import CosineLR
+from core.utils.trades import trades_loss, trades_tree_loss
 
 from core.models.treeresnet import lighttreeresnet
 
-from .context import ctx_noparamgrad_and_eval
+from core.utils.context import ctx_noparamgrad_and_eval
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -52,8 +51,8 @@ class TreeEnsemble(object):
     def __init__(self, 
         info, args,
         alpha1: float = 1,
-        alpha2: float = 0.6,
-        alpha3: float = 0.4,
+        alpha2: float = 1,
+        alpha3: float = 1,
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,
         gamma: float = 2.0,  # Focal loss gamma parameter
@@ -174,7 +173,7 @@ class TreeEnsemble(object):
                 self.alpha3 = alpha23_total / (1 + balance_ratio)
 
                 return self.alpha1, self.alpha2, self.alpha3
-        if strategy == 'exponential':
+        if strategy == 'decay':
             self.alpha1 *= decay_factor
             return self.alpha1, self.alpha2, self.alpha3
         
