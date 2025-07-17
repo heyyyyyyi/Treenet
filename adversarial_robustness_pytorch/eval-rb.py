@@ -25,6 +25,8 @@ from core.utils import seed
 
 from core import animal_classes, vehicle_classes
 
+import wandb
+
 # Setup
 
 parse = parser_eval()
@@ -55,7 +57,10 @@ threat_model = args.threat
 dataset = args.data
 model_name = args.desc
 
-
+wandb.init(
+    project="ablation_test", entity="yhe106-johns-hopkins-university",
+    name=f"{args.desc}-robustbench",  # Use a descriptive name for this evaluation
+)
 
 # Model
 print('Creating model: {}'.format(args.model))

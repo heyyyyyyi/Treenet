@@ -27,6 +27,8 @@ from core.utils import seed
 # use wandb for logging
 
 import wandb
+import subprocess  # 用于调用评估脚本
+from gowal21uncovering.utils import WATreeTrainer
 
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
 _WANDB_PROJECT = "ablation_test"
@@ -85,7 +87,11 @@ del train_dataset, test_dataset
 # Adversarial Training (AT, TRADES and MART)
 
 seed(args.seed)
-trainer = TreeEnsemble(info, args)
+if args.tau:
+    print ('Using WA.')
+    trainer = WATreeTrainer(info, args)
+else:
+    trainer = TreeEnsemble(info, args)
 
 logger.log("Model Summary:")
 # try:
@@ -191,8 +197,8 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
     
     # log alpha1, alpha2, alpha3
-    # logger.log('Alpha1: {:.4f}.\tAlpha2: {:.4f}.\tAlpha3: {:.4f}'.format(alpha1, alpha2, alpha3))
-    # epoch_metrics.update({'alpha1': alpha1, 'alpha2': alpha2, 'alpha3': alpha3})
+    logger.log('Alpha1: {:.4f}.\tAlpha2: {:.4f}.\tAlpha3: {:.4f}'.format(alpha1, alpha2, alpha3))
+    epoch_metrics.update({'alpha1': alpha1, 'alpha2': alpha2, 'alpha3': alpha3})
 
     if test_adv_acc >= old_score[1]:
         old_score[0], old_score[1] = test_acc, test_adv_acc
@@ -222,4 +228,39 @@ wandb.summary["final_train_acc"] = train_acc
 wandb.summary["final_test_clean_acc"] = old_score[0]
 wandb.summary["final_test_adv_acc"] = old_score[1]
 
+# 自动调用 eval-rb.py
+logger.log('Starting RobustBench evaluation...')
+rb_result = subprocess.run(
+    ['python', 'eval-rb.py', '--desc', args.desc, '--log-dir', args.log_dir, '--data-dir', args.data_dir],
+    capture_output=True, text=True
+)
+logger.log(rb_result.stdout)
+
+# Parse and log RobustBench results to wandb
+for line in rb_result.stdout.splitlines():
+    if "Clean Accuracy" in line:
+        clean_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
+        wandb.summary["robustbench_clean_acc"] = clean_acc
+    if "Robust Accuracy" in line:
+        robust_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
+        wandb.summary["robustbench_robust_acc"] = robust_acc
+
+# 自动调用 eval-aa.py
+logger.log('Starting AutoAttack evaluation...')
+aa_result = subprocess.run(
+    ['python', 'eval-aa.py', '--desc', args.desc, '--log-dir', args.log_dir, '--data-dir', args.data_dir],
+    capture_output=True, text=True
+)
+logger.log(aa_result.stdout)
+
+# Parse and log AutoAttack results to wandb
+for line in aa_result.stdout.splitlines():
+    if "autoattack_clean_accuracy" in line:
+        clean_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
+        wandb.summary["autoattack_clean_acc"] = clean_acc
+    if "autoattack_robust_accuracy" in line:
+        robust_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
+        wandb.summary["autoattack_robust_acc"] = robust_acc
+
 wandb.finish()
+

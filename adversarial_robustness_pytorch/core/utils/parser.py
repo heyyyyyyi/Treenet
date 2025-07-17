@@ -56,6 +56,8 @@ def parser_train():
                         default='./data/ti_500K_pseudo_labeled.pickle')
     
     parser.add_argument('--seed', type=int, default=1, help='Random seed.')
+    
+    parser.add_argument('--tau', type=float, default=0.995, help='Weight averaging decay.')
     return parser
 
 

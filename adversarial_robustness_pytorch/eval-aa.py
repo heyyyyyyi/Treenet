@@ -26,6 +26,8 @@ from core.utils import seed
 
 from core import animal_classes, vehicle_classes
 
+import wandb
+
 # Setup
 
 parse = parser_eval()
@@ -49,6 +51,10 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 logger.log('Using device: {}'.format(device))
 
+wandb.init(
+    project="ablation_test", entity="yhe106-johns-hopkins-university",
+    name=f"{args.desc}-autoattack",  # Use a descriptive name for this evaluation
+)
 
 
 # Load data
