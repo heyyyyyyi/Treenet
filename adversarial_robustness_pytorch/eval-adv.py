@@ -29,6 +29,9 @@ from core.utils import parser_eval
 from core.utils import seed
 from core.utils import Trainer
 
+from core.metrics import accuracy
+
+from sklearn.metrics import confusion_matrix
 
 
 # Setup
@@ -36,16 +39,16 @@ from core.utils import Trainer
 parse = parser_eval()
 args = parse.parse_args()
 
-LOG_DIR = args.log_dir + args.desc
+LOG_DIR = os.path.join(args.log_dir, args.desc)
 with open(LOG_DIR+'/args.txt', 'r') as f:
     old = json.load(f)
     args.__dict__ = dict(vars(args), **old)
 
-DATA_DIR = args.data_dir + args.data + '/'
-LOG_DIR = args.log_dir + args.desc
+DATA_DIR = os.path.join(args.data_dir, args.data)
 WEIGHTS = LOG_DIR + '/weights-best.pt'
 
-logger = Logger(LOG_DIR+'/log-adv.log')
+log_path = LOG_DIR + '/log-aa.log'
+logger = Logger(log_path)
 
 info = get_data_info(DATA_DIR)
 BATCH_SIZE = args.batch_size
@@ -106,6 +109,13 @@ def eval_multiple_restarts_advertorch(attack, model, dataloader, num_restarts=1,
     adv_acc = (is_correct.sum().float()/N).item()
     return adv_acc
 
+def log_confusion_matrix(y_true, y_pred, logger, description="Confusion Matrix"):
+    """
+    Log the confusion matrix.
+    """
+    cm = confusion_matrix(y_true, y_pred)
+    logger.log(f'\n==== {description} ====')
+    logger.log(f'\n{cm}')
 
 
 # PGD Evaluation
@@ -118,9 +128,27 @@ trainer.load_model(WEIGHTS)
 trainer.model.eval()
 
 test_acc = trainer.eval(test_dataloader)
-logger.log('\nStandard Accuracy-\tTest: {:.2f}%.'.format(test_acc*100))
+logger.log('\nStandard Accuracy-\tTest: {:.2f}%.'.format(test_acc['acc']*100))
 
+# Generate confusion matrix for standard evaluation
+y_true, y_pred = [], []
+for x, y in test_dataloader:
+    x, y = x.to(device), y.to(device)
+    out = trainer.model(x)
+    y_true.extend(y.cpu().numpy())
+    y_pred.extend(torch.softmax(out, dim=1).argmax(dim=1).cpu().numpy())
+log_confusion_matrix(y_true, y_pred, logger, description="Standard Evaluation Confusion Matrix")
 
+# Generate confusion matrix for adversarial evaluation
+y_true, y_pred = [], []
+for x, y in test_dataloader:
+    x, y = x.to(device), y.to(device)
+    with ctx_noparamgrad_and_eval(trainer.model):
+        x_adv, _ = trainer.eval_attack.perturb(x, y)            
+    out = trainer.model(x_adv)
+    y_true.extend(y.cpu().numpy())
+    y_pred.extend(torch.softmax(out, dim=1).argmax(dim=1).cpu().numpy())
+log_confusion_matrix(y_true, y_pred, logger, description="Adversarial Evaluation Confusion Matrix")
 
 if args.wb:    
     # CW-PGD-40 Evaluation
@@ -140,6 +168,17 @@ if args.wb:
 
     test_adv_acc1 = eval_multiple_restarts(attack, trainer.model, test_dataloader, num_restarts,  verbose=False)
     logger.log('Adversarial Accuracy-\tTest: {:.2f}%.'.format(test_adv_acc1*100))
+
+    # Generate confusion matrix for CW-PGD evaluation
+    y_true, y_pred = [], []
+    for x, y in test_dataloader:
+        x, y = x.to(device), y.to(device)
+        with ctx_noparamgrad_and_eval(trainer.model):
+            x_adv, _ = attack.perturb(x, y)
+        out = trainer.model(x_adv)
+        y_true.extend(y.cpu().numpy())
+        y_pred.extend(torch.softmax(out, dim=1).argmax(dim=1).cpu().numpy())
+    log_confusion_matrix(y_true, y_pred, logger, description="CW-PGD Evaluation Confusion Matrix")
     
 
     # PGD-40 (with 5 restarts) Evaluation
@@ -158,6 +197,17 @@ if args.wb:
 
     test_adv_acc2 = eval_multiple_restarts(attack, trainer.model, test_dataloader, num_restarts, verbose=True)
     logger.log('Adversarial Accuracy-\tTest: {:.2f}%.'.format(test_adv_acc2*100))
+
+    # Generate confusion matrix for PGD+ evaluation
+    y_true, y_pred = [], []
+    for x, y in test_dataloader:
+        x, y = x.to(device), y.to(device)
+        with ctx_noparamgrad_and_eval(trainer.model):
+            x_adv, _ = attack.perturb(x, y)
+        out = trainer.model(x_adv)
+        y_true.extend(y.cpu().numpy())
+        y_pred.extend(torch.softmax(out, dim=1).argmax(dim=1).cpu().numpy())
+    log_confusion_matrix(y_true, y_pred, logger, description="PGD+ Evaluation Confusion Matrix")
 
 
 
@@ -201,7 +251,20 @@ if args.source != None:
                                                                                                    args.attack_eps, 
                                                                                                    args.attack_iter))
     logger.log('Black-box Adv. Accuracy-\tTest: {:.2f}%.'.format(adv_acc*100))
+
+    # Generate confusion matrix for Black-box evaluation
+    y_true, y_pred = [], []
+    for x, y in test_dataloader:
+        x, y = x.to(device), y.to(device)
+        with ctx_noparamgrad_and_eval(src_model):
+            x_adv, _ = src_attack.perturb(x, y)            
+        out = trainer.model(x_adv)
+        y_true.extend(y.cpu().numpy())
+        y_pred.extend(torch.softmax(out, dim=1).argmax(dim=1).cpu().numpy())
+    log_confusion_matrix(y_true, y_pred, logger, description="Black-box Evaluation Confusion Matrix")
+
     del src_attack, src_model
 
+# print confusion matrix 
 
 logger.log('Script Completed.')

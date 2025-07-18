@@ -255,7 +255,7 @@ class TreeEnsemble(object):
         if is_vehicle.any():
             subroot_loss_vehicle, subroot_pt_vehicle = focal_loss_with_pt(logits_vehicle[is_vehicle], y[is_vehicle], gamma=self.gamma)
 
-        loss = self.alpah1*root_loss + self.alpha2*subroot_loss_animal + self.alpha3*subroot_loss_vehicle
+        loss = self.alpha1*root_loss + self.alpha2*subroot_loss_animal + self.alpha3*subroot_loss_vehicle
         return loss, root_loss, subroot_loss_animal, subroot_loss_vehicle, root_pt, subroot_pt_animal, subroot_pt_vehicle
     
     def wrap_loss_fn(self, logits_set, y):

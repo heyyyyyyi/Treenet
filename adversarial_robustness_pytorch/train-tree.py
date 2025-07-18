@@ -39,8 +39,7 @@ _WANDB_PROJECT = "ablation_test"
 parse = parser_train()
 # add args decay_foctor
 parse.add_argument('--decay_factor', type=float, default=0.98, help='Decay factor for alpha values.')
-parse.add_argumen('--strategy', type=str, default='exponential', choices=['exponential', 'linear'], help='Strategy for alpha decay.')
-
+parse.add_argument('--strategy', type=str, default='exponential', choices=['exponential', 'linear'])
 args = parse.parse_args()
 
 wandb.init(
@@ -145,7 +144,7 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     # root_acc_animal = test_res['root_acc_animal']
     # root_acc_vehicle = test_res['root_acc_vehicle']
 
-    alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, args.decay_factor)
+    alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, args.decay_factor, args.strategy)
 
     logger.log('Loss: {:.4f}.\tRoot LR: {:.6f}.\tSubroot Animal LR: {:.6f}.\tSubroot Vehicle LR: {:.6f}'.format(
         res['loss'], root_lr, subroot_animal_lr, subroot_vehicle_lr
@@ -208,14 +207,12 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     trainer.save_model(os.path.join(LOG_DIR, 'weights-last.pt'))
 
     logger.log('Time taken: {}'.format(format_time(time.time()-start)))
-    #metrics = metrics.append(pd.DataFrame(epoch_metrics, index=[0]), ignore_index=True)
-    metrics = pd.concat([metrics, pd.DataFrame(epoch_metrics, index=[0])], ignore_index=True)
+    if not pd.DataFrame(epoch_metrics, index=[0]).isna().all(axis=None):
+        metrics = pd.concat([metrics, pd.DataFrame(epoch_metrics, index=[0])], ignore_index=True)
 
     metrics.to_csv(os.path.join(LOG_DIR, 'stats_adv.csv'), index=False)
     wandb.log(epoch_metrics)
 
-    
-    
 # Record metrics
 
 train_acc = res['clean_acc'] if 'clean_acc' in res else trainer.eval(train_dataloader)['acc']
@@ -231,21 +228,21 @@ wandb.summary["final_test_clean_acc"] = old_score[0]
 wandb.summary["final_test_adv_acc"] = old_score[1]
 
 # 自动调用 eval-rb.py
-# logger.log('Starting RobustBench evaluation...')
-# rb_result = subprocess.run(
-#     ['python', 'eval-rb.py', '--desc', args.desc, '--log-dir', args.log_dir, '--data-dir', args.data_dir],
-#     capture_output=True, text=True
-# )
-# logger.log(rb_result.stdout)
+logger.log('Starting RobustBench evaluation...')
+rb_result = subprocess.run(
+    ['python', 'eval-rb.py', '--desc', args.desc, '--log-dir', args.log_dir, '--data-dir', args.data_dir],
+    capture_output=True, text=True
+)
+logger.log(rb_result.stdout)
 
-# # Parse and log RobustBench results to wandb
-# for line in rb_result.stdout.splitlines():
-#     if "Clean Accuracy" in line:
-#         clean_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
-#         wandb.summary["robustbench_clean_acc"] = clean_acc
-#     if "Robust Accuracy" in line:
-#         robust_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
-#         wandb.summary["robustbench_robust_acc"] = robust_acc
+# Parse and log RobustBench results to wandb
+for line in rb_result.stdout.splitlines():
+    if "Clean Accuracy" in line:
+        clean_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
+        wandb.summary["robustbench_clean_acc"] = clean_acc
+    if "Robust Accuracy" in line:
+        robust_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
+        wandb.summary["robustbench_robust_acc"] = robust_acc
 
 # 自动调用 eval-aa.py
 logger.log('Starting AutoAttack evaluation...')
