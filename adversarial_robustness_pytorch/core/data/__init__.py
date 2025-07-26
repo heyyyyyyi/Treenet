@@ -46,7 +46,7 @@ def get_data_info(data_dir):
 
 
 def load_data(data_dir, batch_size=256, batch_size_test=256, num_workers=4, use_augmentation=False, shuffle_train=True, 
-              aux_data_filename=None, unsup_fraction=None, validation=False, filter_classes=None, binary_classes=None):
+              aux_data_filename=None, unsup_fraction=None, validation=False, filter_classes=None, binary_classes=None, pseudo_label_classes=None):
     """
     Returns train, test datasets and dataloaders.
     Arguments:
@@ -84,6 +84,10 @@ def load_data(data_dir, batch_size=256, batch_size_test=256, num_workers=4, use_
             train_dataset.relabel_binary(binary_classes)
             test_dataset.relabel_binary(binary_classes)
 
+        if pseudo_label_classes is not None:
+            train_dataset.relabel_pseudo(pseudo_label_classes)
+            test_dataset.relabel_pseudo(pseudo_label_classes)
+
         # Get dataloaders
         if validation:
             train_dataloader, test_dataloader, val_dataloader = get_semisup_dataloaders(
@@ -99,7 +103,7 @@ def load_data(data_dir, batch_size=256, batch_size_test=256, num_workers=4, use_
     else:
         # Load standard datasets
         train_dataset, test_dataset = load_dataset_fn(
-            data_dir=data_dir, use_augmentation=use_augmentation, filter_classes=filter_classes, binary_classes=binary_classes
+            data_dir=data_dir, use_augmentation=use_augmentation, filter_classes=filter_classes, binary_classes=binary_classes, pseudo_label_classes=pseudo_label_classes
         )
 
         # Get dataloaders

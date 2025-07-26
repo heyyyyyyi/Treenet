@@ -13,7 +13,7 @@ DATA_DESC = {
 }
 
 
-def load_cifar10(data_dir, use_augmentation=False, filter_classes=None, binary_classes=None):
+def load_cifar10(data_dir, use_augmentation=False, filter_classes=None, binary_classes=None, pseudo_label_classes=None):
     """
     Returns CIFAR10 train, test datasets and dataloaders.
     Arguments:
@@ -48,10 +48,23 @@ def load_cifar10(data_dir, use_augmentation=False, filter_classes=None, binary_c
         train_dataset.targets = [class_mapping[label] for label in train_dataset.targets]
         test_dataset.targets = [class_mapping[label] for label in test_dataset.targets]
 
-    # Apply binary relabeling if specified
-    if binary_classes is not None:
-        positive_classes = set(binary_classes)
-        train_dataset.targets = [1 if label in positive_classes else 0 for label in train_dataset.targets]
-        test_dataset.targets = [1 if label in positive_classes else 0 for label in test_dataset.targets]
+    # # Apply binary relabeling if specified
+    # if binary_classes is not None:
+    #     positive_classes = set(binary_classes)
+    #     train_dataset.targets = [1 if label in positive_classes else 0 for label in train_dataset.targets]
+    #     test_dataset.targets = [1 if label in positive_classes else 0 for label in test_dataset.targets]
 
+    # pseodo-label, all other classes are set to other 
+    if pseudo_label_classes is not None:
+        train_dataset.targets = torch.tensor(train_dataset.targets)
+        test_dataset.targets = torch.tensor(test_dataset.targets)
+        train_dataset.targets[~torch.isin(train_dataset.targets, torch.tensor(pseudo_label_classes))] = 10
+        test_dataset.targets[~torch.isin(test_dataset.targets, torch.tensor(pseudo_label_classes))] = 10
+        # Remap pseudo-label classes to a contiguous range starting from 0
+        class_mapping = {old_label: new_label for new_label, old_label in enumerate(pseudo_label_classes)}
+        class_mapping[10] = len(pseudo_label_classes)
+        #print(class_mapping, train_dataset.targets.unique())
+        train_dataset.targets = [class_mapping[int(label)] for label in train_dataset.targets]  # Convert to int
+        test_dataset.targets = [class_mapping[int(label)] for label in test_dataset.targets]    # Convert to int
+    
     return train_dataset, test_dataset

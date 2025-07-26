@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from core.attacks import create_attack
 from core.metrics import accuracy, binary_accuracy, subclass_accuracy
-from .model import create_model
+from core.models import create_model
 
 from core.utils.mart import mart_loss, mart_tree_loss
 from core.utils.rst import CosineLR

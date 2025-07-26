@@ -1,0 +1,299 @@
+"""
+Adversarial Training. (Tree)
+"""
+
+import json
+import time
+import argparse
+import shutil
+
+import os
+import numpy as np
+import pandas as pd
+
+import torch
+import torch.nn as nn
+
+from core.data import get_data_info
+from core.data import load_data
+
+from core.utils import format_time
+from core.utils import Logger
+from core.utils import parser_train
+
+from par.train import TreeEnsemble
+from par.individual_train import run_training, setup_data
+
+
+from core.utils import seed
+import wandb
+import subprocess  # 用于调用评估脚本
+
+from core import animal_classes, vehicle_classes
+
+_WANDB_USERNAME = "yhe106-johns-hopkins-university"
+_WANDB_PROJECT = "ablation_test"
+
+# Setup
+
+parse = parser_train()
+# 添加参数
+parse.add_argument('--decay_factor', type=float, default=0.98, help='Decay factor for alpha values.')
+parse.add_argument('--strategy', type=str, default='linear', choices=['exponential', 'linear'], help='Strategy for alpha decay.')
+parse.add_argument('--softroute', type=bool, default=True, help='Use soft routing for the tree ensemble.')
+parse.add_argument('--unknown_classes', type=bool, default=True, help='Use unknown classes for the tree ensemble.')
+parse.add_argument('--pretrained', type=bool, default=True, help='Load pre-trained sub-models.')
+parse.add_argument('--train_submodels', type=bool, default=False, help='Train sub-models independently before ensemble training.')
+args = parse.parse_args()
+
+DATA_DIR = os.path.join(args.data_dir, args.data)
+LOG_DIR = os.path.join(args.log_dir, args.desc)
+WEIGHTS = os.path.join(LOG_DIR, 'weights-best.pt')
+if os.path.exists(LOG_DIR):
+    shutil.rmtree(LOG_DIR)
+os.makedirs(LOG_DIR, exist_ok=True)
+logger = Logger(os.path.join(LOG_DIR, 'log-train.log'))
+
+with open(os.path.join(LOG_DIR, 'args.txt'), 'w') as f:
+    json.dump(vars(args), f, indent=4)
+
+info = get_data_info(DATA_DIR)
+BATCH_SIZE = args.batch_size
+BATCH_SIZE_VALIDATION = args.batch_size_validation
+NUM_ADV_EPOCHS = args.num_adv_epochs
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+logger.log('Using device: {}'.format(device))
+if args.debug:
+    NUM_ADV_EPOCHS = 1
+
+torch.backends.cudnn.benchmark = True
+
+# Load data
+seed(args.seed)
+train_dataset, test_dataset, train_dataloader, test_dataloader = load_data(
+    DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, use_augmentation=args.augment, shuffle_train=True, 
+    aux_data_filename=args.aux_data_filename, unsup_fraction=args.unsup_fraction, 
+)
+del train_dataset, test_dataset
+
+# Train sub-models if required
+if args.train_submodels:
+    from par.individual_train import run_training, setup_data
+    logger.log("Training sub-models independently...")
+    try:
+
+        # Train root model
+        wandb.init(
+            project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
+            name=f"{args.desc}-root",
+            reinit=True,
+        )
+        run_training(
+            info=info, temp_args=args, logger=logger, train_dataloader=train_dataloader, test_dataloader=test_dataloader,
+            desc="10-class", num_classes=10, eval_metrics=["animal", "vehicle", "bi"]
+        )
+        wandb.finish()
+
+        # Train subroot animal model
+        if args.unknown_classes:
+            pseudo_label_classes = animal_classes
+            desc = "7-class-animal"
+            num_classes = 7
+        else:
+            pseudo_label_classes = None
+            desc = "6-class-animal"
+            num_classes = 6
+
+        animal_train_dataloader, animal_test_dataloader = setup_data(
+            DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=None, pseudo_label_classes=pseudo_label_classes
+        )
+        wandb.init(
+            project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
+            name=f"{args.desc}-{desc}",
+            reinit=True,
+        )
+        run_training(
+            info=info, temp_args=args, logger=logger, train_dataloader=animal_train_dataloader, test_dataloader=animal_test_dataloader,
+            desc=desc, num_classes=num_classes, eval_metrics=["animal"]
+        )
+        # Clean up dataloaders
+        del animal_train_dataloader, animal_test_dataloader
+        wandb.finish()
+
+        # Train subroot vehicle model
+        if args.unknown_classes:
+            pseudo_label_classes = vehicle_classes
+            desc = "5-class-vehicle"
+            num_classes = 5
+        else:
+            pseudo_label_classes = None
+            desc = "4-class-vehicle"
+            num_classes = 4
+
+        vehicle_train_dataloader, vehicle_test_dataloader = setup_data(
+            DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=None, pseudo_label_classes=pseudo_label_classes
+        )
+        wandb.init(
+            project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
+            name=f"{args.desc}-{desc}",
+            reinit=True,
+        )
+        run_training(
+            info=info, temp_args=args, logger=logger, train_dataloader=vehicle_train_dataloader, test_dataloader=vehicle_test_dataloader,
+            desc=desc, num_classes=num_classes, eval_metrics=["vehicle"]
+        )
+        # Clean up dataloaders
+        del vehicle_train_dataloader, vehicle_test_dataloader
+        wandb.finish()
+
+    except Exception as e:
+        logger.log(f"Error during sub-model training: {e}")
+        exit(1)
+
+# Initialize wandb at the end to log final metrics
+wandb.init(
+    project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
+    name=args.desc,
+    reinit=True,
+)
+
+# Initialize TreeEnsemble
+trainer = TreeEnsemble(info, args)
+
+# Load pre-trained sub-models if specified
+if args.pretrained:
+    logger.log("Loading pre-trained sub-models...")
+    root_model_path = os.path.join(args.log_dir, "10-class/weights-best.pt")
+    if args.unknown_classes:
+        animal_model_path = os.path.join(args.log_dir, "7-class-animal/weights-best.pt")
+        vehicle_model_path = os.path.join(args.log_dir, "5-class-vehicle/weights-best.pt")
+    else:
+        animal_model_path = os.path.join(args.log_dir, "6-class-animal/weights-best.pt")
+        vehicle_model_path = os.path.join(args.log_dir, "4-class-vehicle/weights-best.pt")
+    trainer.load_individual_models(root_model_path, animal_model_path, vehicle_model_path)
+
+logger.log("Model Summary:")
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+logger.log("Total Trainable Parameters: {}".format(count_parameters(trainer.model)))
+
+last_lr = args.lr
+
+# Adversarial Training
+if NUM_ADV_EPOCHS > 0:
+    logger.log('\n\n')
+    metrics = pd.DataFrame()
+    logger.log('Standard Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader)['acc']*100))
+    
+    old_score = [0.0, 0.0]
+    logger.log('Adversarial training for {} epochs'.format(NUM_ADV_EPOCHS))
+    trainer.init_optimizer(args.num_adv_epochs)
+    test_adv_acc = 0.0    
+
+for epoch in range(1, NUM_ADV_EPOCHS+1):
+    start = time.time()
+    logger.log('======= Epoch {} ======='.format(epoch))
+    
+    # 提取学习率
+    root_lr = trainer.optimizer.param_groups[0]['lr']
+    subroot_animal_lr = trainer.optimizer.param_groups[1]['lr']
+    subroot_vehicle_lr = trainer.optimizer.param_groups[2]['lr']
+
+    if args.scheduler:
+        last_lr = trainer.scheduler.get_last_lr()[0]
+    
+    res = trainer.train(train_dataloader, epoch=epoch, adversarial=True)
+    test_res = trainer.eval(test_dataloader)
+    test_acc = test_res['acc']
+    root_acc = test_res['root_acc']
+    root_acc_bi = test_res['root_acc_bi']
+    acc_animal = test_res['acc_animal']
+    acc_vehicle = test_res['acc_vehicle']
+
+    alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, args.decay_factor)
+
+    logger.log('Loss: {:.4f}.\tRoot LR: {:.6f}.\tSubroot Animal LR: {:.6f}.\tSubroot Vehicle LR: {:.6f}'.format(
+        res['loss'], root_lr, subroot_animal_lr, subroot_vehicle_lr
+    ))
+    
+    if 'clean_acc' in res:
+        logger.log('Standard Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['clean_acc']*100, test_acc*100))
+    else:
+        logger.log('Standard Accuracy-\tTest: {:.2f}%.'.format(test_acc*100))
+    
+    epoch_metrics = {'train_'+k: v for k, v in res.items()}
+    epoch_metrics.update({
+        'epoch': epoch,
+        'lr_root': root_lr,
+        'lr_subroot_animal': subroot_animal_lr,
+        'lr_subroot_vehicle': subroot_vehicle_lr,
+        'test_clean_acc': test_acc,
+        'test_clean_acc_bi': root_acc_bi,
+        'test_clean_root_acc': root_acc,
+        'test_clean_acc_animal': acc_animal,
+        'test_clean_acc_vehicle': acc_vehicle,
+        'test_adversarial_acc': None,
+        'test_adversarial_acc_animal': None,
+        'test_adversarial_acc_vehicle': None,
+        'test_adversarial_acc_bi': None,
+    })
+    
+    if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5):
+        test_adv_res = trainer.eval(test_dataloader, adversarial=True)
+        test_adv_acc = test_adv_res['acc']
+        logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
+                                                                                   test_adv_acc*100))
+        epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
+
+    if test_adv_acc >= old_score[1]:
+        old_score[0], old_score[1] = test_acc, test_adv_acc
+        trainer.save_model(WEIGHTS)
+    trainer.save_model(os.path.join(LOG_DIR, 'weights-last.pt'))
+
+    logger.log('Time taken: {}'.format(format_time(time.time()-start)))
+    
+    # 检查 epoch_metrics 是否为空或包含全为 NA 的列
+    epoch_metrics_df = pd.DataFrame(epoch_metrics, index=[0])
+    if not epoch_metrics_df.empty and not epoch_metrics_df.isna().all(axis=None):
+        metrics = pd.concat([metrics, epoch_metrics_df], ignore_index=True)
+
+    metrics.to_csv(os.path.join(LOG_DIR, 'stats_adv.csv'), index=False)
+    wandb.log(epoch_metrics)
+
+# Record metrics
+train_acc = res['clean_acc'] if 'clean_acc' in res else trainer.eval(train_dataloader)['acc']
+logger.log('\nTraining completed.')
+logger.log('Standard Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(train_acc*100, old_score[0]*100))
+if NUM_ADV_EPOCHS > 0:
+    logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, old_score[1]*100)) 
+
+logger.log('Script Completed.')
+
+
+wandb.summary["final_train_acc"] = train_acc
+wandb.summary["final_test_clean_acc"] = old_score[0]
+wandb.summary["final_test_adv_acc"] = old_score[1]
+
+# Ensure AutoAttack evaluation subprocess runs successfully
+try:
+    logger.log('Starting AutoAttack evaluation...')
+    aa_result = subprocess.run(
+        ['python', 'eval-aa.py', '--desc', args.desc, '--log-dir', args.log_dir, '--data-dir', args.data_dir, '--softroute', str(args.softroute).lower(), '--unknown_classes', str(args.unknown_classes).lower()],
+        capture_output=True, text=True
+    )
+    logger.log(aa_result.stdout)
+
+    # Parse and log AutoAttack results to wandb
+    for line in aa_result.stdout.splitlines():
+        if "autoattack_clean_accuracy" in line:
+            clean_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
+            wandb.summary["autoattack_clean_acc"] = clean_acc
+        if "autoattack_robust_accuracy" in line:
+            robust_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
+            wandb.summary["autoattack_robust_acc"] = robust_acc
+except Exception as e:
+    logger.log(f"AutoAttack evaluation failed: {e}")
+
+wandb.finish()
+

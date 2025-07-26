@@ -57,7 +57,7 @@ def parser_train():
     
     parser.add_argument('--seed', type=int, default=1, help='Random seed.')
     
-    parser.add_argument('--tau', type=float, default=0.995, help='Weight averaging decay.')
+    parser.add_argument('--tau', type=float, default=None, help='Weight averaging decay.')
     return parser
 
 

@@ -57,13 +57,10 @@ class TreeEnsemble(object):
         alpha_update_strategy: dict = None,
         gamma: float = 2.0,  # Focal loss gamma parameter
 
-
-        unknown_classes: bool = False,  # Whether to use unknown classes in the model
-        softrouting: bool = False,  # Whether to use soft routing in the model
     ):
         
-        self.model = create_model(args.model, args.normalize, info, device, unknown_classes=unknown_classes)
-        self.softtrouting = softrouting  # Whether to use soft routing in the model
+        self.model = create_model(args.model, args.normalize, info, device, unknown_classes=args.unknown_classes)
+        self.softroute = args.softroute  # Whether to use soft routing in the model
         
         self.alpha1 = alpha1
         self.alpha2 = alpha2
@@ -78,11 +75,8 @@ class TreeEnsemble(object):
 
         self.params = args
         #self.criterion = nn.CrossEntropyLoss(reduction='mean')
-        if softrouting:
-            self.criterion = focal_loss_with_pt(reduction='none')
-        else:
-            self.criterion = focal_loss_with_pt(reduction='mean')
-        # for kendall loss weight, set as trainable parameter 
+        self.criterion = focal_loss_with_pt  # Use focal loss with pt recording
+                # for kendall loss weight, set as trainable parameter 
         # self.s_r = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
         # self.s_a = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
         # self.s_v = nn.Parameter(torch.tensor(0.0, device=device), requires_grad=True)
@@ -163,35 +157,33 @@ class TreeEnsemble(object):
 
     def update_alphas(self, current_epoch: int, decay_factor: float=0.98, strategy: str = 'linear'):
         """
-        linear update: Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
+        Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
         """
-        if self.softtrouting:
+        if self.softroute:
             return self.alpha1, self.alpha2, self.alpha3
-        
-        elif strategy == 'linear':
-            # linear update
-            progress = current_epoch / self.max_epochs  # Calculate training progress (0 to 1)
-            self.alpha1 = max(0.01, 0.9 - 0.9 * progress)  # Decrease alpha1 from 0.9 to 0.01
-            alpha23_total = 0.1 + 0.9 * progress  # Increase alpha2 + alpha3 from 0.1 to 0.9
-        
-            # Use a custom strategy if provided
+
+        if strategy == 'linear':
+            progress = current_epoch / self.max_epochs
+            self.alpha1 = max(0.01, 0.9 - 0.9 * progress)
+            alpha23_total = 0.1 + 0.9 * progress
+
             if callable(self.alpha_update_strategy):
                 self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
             else:
-                # Split alpha23_total between alpha2 and alpha3 based on the balance ratio
-                balance_ratio = self.alpha_update_strategy["balance_ratio"]
+                balance_ratio = self.alpha_update_strategy.get("balance_ratio", 1)
                 self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
                 self.alpha3 = alpha23_total / (1 + balance_ratio)
-            return self.alpha1, self.alpha2, self.alpha3
-        
         elif strategy == 'decay':
             self.alpha1 *= decay_factor
-            return self.alpha1, self.alpha2, self.alpha3
-        
 
-    def forward(self, x):
-        if not self.softtrouting:
-            root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
+        return self.alpha1, self.alpha2, self.alpha3
+
+    def forward(self, x, logits=False):
+        if not self.softroute:
+            if not logits:
+                root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
+            else:
+                root_logits, subroot_animal_logits, subroot_vehicle_logits = x
 
             root_pred = torch.argmax(root_logits, dim=1)
 
@@ -212,13 +204,25 @@ class TreeEnsemble(object):
         
         else:
             # weighted logits for soft routing
-            root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
+            if not logits:
+                root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
+            else:
+                root_logits, subroot_animal_logits, subroot_vehicle_logits = x
 
             root_probs = torch.softmax(root_logits, dim=1)
 
             # animal mask: shape [B, 1]，每个样本是否属于 animal coarse 的置信度
             animal_score = root_probs[:, animal_classes].sum(dim=1, keepdim=True)
             vehicle_score = root_probs[:, vehicle_classes].sum(dim=1, keepdim=True)
+            
+            animal_classes_index = torch.tensor(animal_classes, device=animal_score.device)
+            vehicle_classes_index = torch.tensor(vehicle_classes, device=vehicle_score.device)
+
+            animal_logits = torch.full_like(root_logits, fill_value=-5.0)
+            vehicle_logits = torch.full_like(root_logits, fill_value=-5.0)
+
+            animal_logits[:, animal_classes_index] = subroot_animal_logits[:, :-1]
+            vehicle_logits[:, vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
 
             # Normalize
             total = animal_score + vehicle_score + 1e-8
@@ -227,7 +231,7 @@ class TreeEnsemble(object):
             w_root = 1.0 - w_animal - w_vehicle
 
             # shape broadcast
-            final_logits = w_root * root_logits + w_animal * subroot_animal_logits + w_vehicle * subroot_vehicle_logits
+            final_logits = w_root*root_logits+ w_animal * animal_logits + w_vehicle * vehicle_logits
             return final_logits
 
     def train(self, dataloader, epoch=0, adversarial=False, verbose=True):
@@ -242,7 +246,7 @@ class TreeEnsemble(object):
             # each batch
             x, y = data
             x, y = x.to(device), y.to(device)
-
+            #print(f"Training batch with shape {x.shape} and labels {y.shape}")
             if adversarial:
                 if self.params.beta is not None and self.params.mart:
                     loss, batch_metrics = self.mart_loss(x, y, beta=self.params.beta)
@@ -271,7 +275,8 @@ class TreeEnsemble(object):
         """
         Loss function for the model with pt recording.
         """
-        if not self.softtrouting:
+        #loss, root_loss, subroot_loss_animal, subroot_loss_vehicle, root_pt, subroot_pt_animal, subroot_pt_vehicle = None, None, None, None, None, None, None
+        if not self.softroute:
             root_logits, logits_animal, logits_vehicle = logits_set
             root_loss, root_pt = self.criterion(root_logits, y, gamma=self.gamma)
             subroot_loss_animal, subroot_pt_animal = torch.tensor(1, device=y.device), torch.tensor([], device=y.device)
@@ -292,44 +297,30 @@ class TreeEnsemble(object):
             return loss, root_loss, subroot_loss_animal, subroot_loss_vehicle, root_pt, subroot_pt_animal, subroot_pt_vehicle
         
         else:
+            # Weighted logits for soft routing
+            final_logits = self.forward(logits_set, logits=True)
+            loss, _ = self.criterion(final_logits, y, gamma=self.gamma)
+
+            # # Return only the main loss when softroute is enabled
+            # return loss, None, None, None, None, None, None
 
             root_logits, logits_animal, logits_vehicle = logits_set
-            root_probs = torch.softmax(root_logits, dim=1)
-
-            animal_classes_index = torch.tensor(animal_classes, device=y.device)
-            vehicle_classes_index = torch.tensor(vehicle_classes, device=y.device)
-
-            is_animal = torch.isin(y, animal_classes_index)
-            is_vehicle = torch.isin(y, vehicle_classes_index)
-
-            animal_score = root_probs[:, animal_classes_index].sum(dim=1)
-            vehicle_score = root_probs[:, vehicle_classes_index].sum(dim=1)
-
             root_loss, root_pt = self.criterion(root_logits, y, gamma=self.gamma)
 
-            subroot_loss_animal = torch.zeros(1, device=y.device)
-            subroot_pt_animal = torch.tensor([], device=y.device)
-            if is_animal.any():
-                subroot_loss_animal_all, subroot_pt_animal = self.criterion(
-                    logits_animal[is_animal], y[is_animal], gamma=self.gamma, reduction='none'
-                )
-                weights = animal_score[is_animal]
-                subroot_loss_animal = (subroot_loss_animal_all * weights).sum() / weights.sum()
+            # Clone `y` to avoid in-place modifications
+            y_animal = y.clone()
+            y_vehicle = y.clone()
 
-            subroot_loss_vehicle = torch.zeros(1, device=y.device)
-            subroot_pt_vehicle = torch.tensor([], device=y.device)
-            if is_vehicle.any():
-                subroot_loss_vehicle_all, subroot_pt_vehicle = self.criterion(
-                    logits_vehicle[is_vehicle], y[is_vehicle], gamma=self.gamma, reduction='none'
-                )
-                weights = vehicle_score[is_vehicle]
-                subroot_loss_vehicle = (subroot_loss_vehicle_all * weights).sum() / weights.sum()
+            # Map `y` to subroot_animal and subroot_vehicle targets
+            y_animal = map_labels_to_subroots(y_animal, animal_classes)
+            y_vehicle = map_labels_to_subroots(y_vehicle, vehicle_classes)
 
-            # Loss融合（静态或动态都行）
-            loss = self.alpha1 * root_loss + self.alpha2*subroot_loss_animal + self.alpha3*subroot_loss_vehicle
+            subroot_loss_animal, subroot_pt_animal = self.criterion(logits_animal, y_animal, gamma=self.gamma)
+            subroot_loss_vehicle, subroot_pt_vehicle = self.criterion(logits_vehicle, y_vehicle, gamma=self.gamma)
 
+            # Combine losses
+            loss = root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle
             return loss, root_loss, subroot_loss_animal, subroot_loss_vehicle, root_pt, subroot_pt_animal, subroot_pt_vehicle
-
 
     def wrap_loss_fn(self, logits_set, y):
         """
@@ -353,14 +344,20 @@ class TreeEnsemble(object):
         preds = out.detach()
         batch_metrics = {
             'loss': loss.item(),
-            'root_loss': root_loss.item(),
-            'subroot_loss_animal': subroot_loss_animal.item(),
-            'subroot_loss_vehicle': subroot_loss_vehicle.item(),
             'clean_acc': accuracy(y, preds),
-            'root_pt': root_pt.mean().item(),
-            'subroot_pt_animal': subroot_pt_animal.mean().item() if len(subroot_pt_animal) > 0 else None,
-            'subroot_pt_vehicle': subroot_pt_vehicle.mean().item() if len(subroot_pt_vehicle) > 0 else None,
         }
+
+        # Record additional metrics only if not using softroute
+        if not self.softroute:
+            batch_metrics.update({
+                'root_loss': root_loss.item() if root_loss is not None else 0.0,
+                'subroot_loss_animal': subroot_loss_animal.item() if subroot_loss_animal is not None else 0.0,
+                'subroot_loss_vehicle': subroot_loss_vehicle.item() if subroot_loss_vehicle is not None else 0.0,
+                'root_pt': root_pt.mean().item() if root_pt is not None and root_pt.numel() > 0 else 0.0,
+                'subroot_pt_animal': subroot_pt_animal.mean().item() if subroot_pt_animal is not None and subroot_pt_animal.numel() > 0 else 0.0,
+                'subroot_pt_vehicle': subroot_pt_vehicle.mean().item() if subroot_pt_vehicle is not None and subroot_pt_vehicle.numel() > 0 else 0.0,
+            })
+
         return loss, batch_metrics
 
     def adversarial_loss(self, x, y):
@@ -385,12 +382,12 @@ class TreeEnsemble(object):
         preds = out.detach()
         batch_metrics = {
             'loss': loss.item(),
-            'root_loss': root_loss.item(),
-            'subroot_loss_animal': subroot_loss_animal.item(),
-            'subroot_loss_vehicle': subroot_loss_vehicle.item(),
-            'root_pt': root_pt.mean().item(),
-            'subroot_pt_animal': subroot_pt_animal.mean().item() if len(subroot_pt_animal) > 0 else None,
-            'subroot_pt_vehicle': subroot_pt_vehicle.mean().item() if len(subroot_pt_vehicle) > 0 else None,
+            'root_loss': root_loss.item() if root_loss is not None else 0.0,
+            'subroot_loss_animal': subroot_loss_animal.item() if subroot_loss_animal is not None else 0.0,
+            'subroot_loss_vehicle': subroot_loss_vehicle.item() if subroot_loss_vehicle is not None else 0.0,
+            'root_pt': root_pt.mean().item() if root_pt is not None and root_pt.numel() > 0 else 0.0,
+            'subroot_pt_animal': subroot_pt_animal.mean().item() if subroot_pt_animal is not None and subroot_pt_animal.numel() > 0 else 0.0,
+            'subroot_pt_vehicle': subroot_pt_vehicle.mean().item() if subroot_pt_vehicle is not None and subroot_pt_vehicle.numel() > 0 else 0.0,
         }
         if self.params.keep_clean:
             preds_clean, preds_adv = preds[:len(x)], preds[len(x):]
@@ -436,6 +433,7 @@ class TreeEnsemble(object):
         
         for x, y in dataloader:
             x, y = x.to(device), y.to(device)
+            #print(f"Evaluating batch with shape {x.shape} and labels {y.shape}")
             if adversarial:
                 with ctx_noparamgrad_and_eval(self.model):
                     x_adv, _ = self.eval_attack.perturb(x, y)            
@@ -476,38 +474,73 @@ class TreeEnsemble(object):
     
     def save_model(self, path):
         """
-        Save model weights.
+        Save model weights with error handling.
         """
-        torch.save({'model_state_dict': self.model.state_dict()}, path)
+        try:
+            torch.save({'model_state_dict': self.model.state_dict()}, path)
+        except Exception as e:
+            print(f"Failed to save model at {path}: {e}")
 
     
     def load_model(self, path, load_opt=True):
         """
-        Load model weights.
+        Load model weights with error handling.
         """
-        checkpoint = torch.load(path)
-        if 'model_state_dict' not in checkpoint:
-            raise RuntimeError('Model weights not found at {}.'.format(path))
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        try:
+            checkpoint = torch.load(path)
+            if 'model_state_dict' not in checkpoint:
+                raise RuntimeError(f"Model weights not found at {path}.")
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+        except Exception as e:
+            print(f"Failed to load model from {path}: {e}")
 
     def load_individual_models(self, root_path=None, animal_path=None, vehicle_path=None):
         """
         Load pre-trained weights for root_model, subroot_animal, and subroot_vehicle separately.
         """
+        def load_model_weights(model, path):
+            try:
+                checkpoint = torch.load(path)
+                if 'model_state_dict' not in checkpoint:
+                    raise RuntimeError(f'Model weights not found at {path}.')
+                state_dict = checkpoint['model_state_dict']
+                model_state_dict = model.state_dict()
+
+                # Filter out mismatched layers
+                filtered_state_dict = {
+                    k: v for k, v in state_dict.items()
+                    if k in model_state_dict and model_state_dict[k].size() == v.size()
+                }
+                model_state_dict.update(filtered_state_dict)
+                model.load_state_dict(model_state_dict)
+            except Exception as e:
+                print(f"Failed to load model from {path}: {e}")
+
         if root_path:
-            checkpoint = torch.load(root_path)
-            if 'model_state_dict' not in checkpoint:
-                raise RuntimeError(f'Root model weights not found at {root_path}.')
-            self.model.root_model.load_state_dict(checkpoint['model_state_dict'])
-
+            load_model_weights(self.model.root_model, root_path)
         if animal_path:
-            checkpoint = torch.load(animal_path)
-            if 'model_state_dict' not in checkpoint:
-                raise RuntimeError(f'Subroot animal model weights not found at {animal_path}.')
-            self.model.subroot_animal.load_state_dict(checkpoint['model_state_dict'])
-
+            load_model_weights(self.model.subroot_animal, animal_path)
         if vehicle_path:
-            checkpoint = torch.load(vehicle_path)
-            if 'model_state_dict' not in checkpoint:
-                raise RuntimeError(f'Subroot vehicle model weights not found at {vehicle_path}.')
-            self.model.subroot_vehicle.load_state_dict(checkpoint['model_state_dict'])
+            load_model_weights(self.model.subroot_vehicle, vehicle_path)
+
+
+def map_labels_to_subroots(y, pseudo_label_classes):
+    """
+    Map labels to subroot targets for soft routing.
+    """
+    # Validate pseudo_label_classes
+    if not pseudo_label_classes or not isinstance(pseudo_label_classes, (list, torch.Tensor)):
+        raise ValueError("Invalid pseudo_label_classes provided.")
+
+    # Clone `y` to avoid in-place modifications
+    y = y.clone()
+
+    # Assign pseudo-label for unknown classes
+    y[~torch.isin(y, torch.tensor(pseudo_label_classes, device=y.device))] = 10
+
+    # Remap pseudo-label classes to a contiguous range starting from 0
+    class_mapping = {old_label: new_label for new_label, old_label in enumerate(pseudo_label_classes)}
+    class_mapping[10] = len(pseudo_label_classes)
+    y = torch.tensor([class_mapping[int(label)] for label in y], device=y.device)  # Convert to int
+
+    return y
