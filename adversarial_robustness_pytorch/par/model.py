@@ -77,27 +77,6 @@ class LightTreeResNet_Unknown(nn.Module):
         subroot_logits_vehicle = self.subroot_vehicle(x)
         return root_logits, subroot_logits_animal, subroot_logits_vehicle
 
-        # # logits_animal = torch.zeros_like(root_logits)
-        # # logits_vehicle = torch.zeros_like(root_logits)
-
-        # animal_classes_index = torch.tensor(animal_classes)
-        # vehicle_classes_index = torch.tensor(vehicle_classes)
-
-        # # logits_animal[:, animal_classes_index] = subroot_logits_animal[:,:-1]
-        # # logits_animal[:, vehicle_classes_index] = subroot_logits_animal[:,-1].unsqueeze(1)/len(vehicle_classes_index)
-
-        # # logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle[:,:-1]
-        # # logits_vehicle[:, animal_classes_index] = subroot_logits_vehicle[:,-1].unsqueeze(1)/len(animal_classes_index)
-        
-        # # small activation for other classes 
-        # logits_animal = torch.full_like(root_logits, fill_value = -5.0)
-        # logits_animal[:, animal_classes_index] = subroot_logits_animal[:,:-1]
-
-        # logits_vehicle = torch.full_like(root_logits, fill_value = -5.0)
-        # logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle[:,:-1]
-
-        # return root_logits, logits_animal, logits_vehicle
-
     def load_root_model(self, path):
         """
         Load pre-trained weights for the root model with error handling.

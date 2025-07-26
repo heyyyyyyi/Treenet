@@ -39,7 +39,7 @@ _WANDB_PROJECT = "ablation_test"
 parse = parser_train()
 # 添加参数
 parse.add_argument('--decay_factor', type=float, default=0.98, help='Decay factor for alpha values.')
-parse.add_argument('--strategy', type=str, default='linear', choices=['exponential', 'linear'], help='Strategy for alpha decay.')
+parse.add_argument('--strategy', type=str, default='constant', choices=['exponential', 'linear', 'constant'], help='Strategy for alpha decay.')
 parse.add_argument('--softroute', type=bool, default=True, help='Use soft routing for the tree ensemble.')
 parse.add_argument('--unknown_classes', type=bool, default=True, help='Use unknown classes for the tree ensemble.')
 parse.add_argument('--pretrained', type=bool, default=True, help='Load pre-trained sub-models.')
@@ -94,6 +94,8 @@ if args.train_submodels:
         )
         wandb.finish()
 
+        breakpoint()
+        
         # Train subroot animal model
         if args.unknown_classes:
             pseudo_label_classes = animal_classes
@@ -236,15 +238,35 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         'test_adversarial_acc': None,
         'test_adversarial_acc_animal': None,
         'test_adversarial_acc_vehicle': None,
+        'test_adversarial_root_acc': None,
         'test_adversarial_acc_bi': None,
     })
     
-    if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5):
+    if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
         test_adv_res = trainer.eval(test_dataloader, adversarial=True)
         test_adv_acc = test_adv_res['acc']
+        test_adv_root_acc = test_adv_res['root_acc']
+        test_adv_root_acc_bi = test_adv_res['root_acc_bi']
+        test_adv_acc_animal = test_adv_res['acc_animal']
+        test_adv_acc_vehicle = test_adv_res['acc_vehicle']
+        # test_adv_root_acc_animal = test_adv_res['root_acc_animal']
+        # test_adv_root_acc_vehicle = test_adv_res['root_acc_vehicle']
+
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
                                                                                    test_adv_acc*100))
         epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
+        epoch_metrics.update({'test_adversarial_root_acc': test_adv_root_acc})
+        epoch_metrics.update({'test_adversarial_acc_bi': test_adv_root_acc_bi})
+        epoch_metrics.update({'test_adversarial_acc_animal': test_adv_acc_animal})
+        epoch_metrics.update({'test_adversarial_acc_vehicle': test_adv_acc_vehicle})
+        # epoch_metrics.update({'test_adversarial_root_acc_animal': test_adv_root_acc_animal})
+        # epoch_metrics.update({'test_adversarial_root_acc_vehicle': test_adv_root_acc_vehicle})
+
+    else:
+        logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
+    
+    logger.log('Alpha1: {:.4f}.\tAlpha2: {:.4f}.\tAlpha3: {:.4f}'.format(alpha1, alpha2, alpha3))
+    epoch_metrics.update({'alpha1': alpha1, 'alpha2': alpha2, 'alpha3': alpha3})
 
     if test_adv_acc >= old_score[1]:
         old_score[0], old_score[1] = test_acc, test_adv_acc

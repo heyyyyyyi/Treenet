@@ -50,9 +50,9 @@ def focal_loss_with_pt(logits, targets, gamma=2.0, reduction='mean'):
 class TreeEnsemble(object):
     def __init__(self, 
         info, args,
-        alpha1: float = 1,
-        alpha2: float = 1,
-        alpha3: float = 1,
+        alpha1: float = 0.5,
+        alpha2: float = 0.3,
+        alpha3: float = 0.3,
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,
         gamma: float = 2.0,  # Focal loss gamma parameter
@@ -155,14 +155,14 @@ class TreeEnsemble(object):
         else:
             self.scheduler = None
 
-    def update_alphas(self, current_epoch: int, decay_factor: float=0.98, strategy: str = 'linear'):
+    def update_alphas(self, current_epoch: int, decay_factor: float=0.98, strategy: str = 'constant'):
         """
         Dynamically update alpha1, alpha2, and alpha3 based on the current epoch.
         """
-        if self.softroute:
+        if strategy == 'constant':
             return self.alpha1, self.alpha2, self.alpha3
 
-        if strategy == 'linear':
+        elif strategy == 'linear':
             progress = current_epoch / self.max_epochs
             self.alpha1 = max(0.01, 0.9 - 0.9 * progress)
             alpha23_total = 0.1 + 0.9 * progress
@@ -319,7 +319,7 @@ class TreeEnsemble(object):
             subroot_loss_vehicle, subroot_pt_vehicle = self.criterion(logits_vehicle, y_vehicle, gamma=self.gamma)
 
             # Combine losses
-            loss = root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle
+            loss = self.alpha1*root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle
             return loss, root_loss, subroot_loss_animal, subroot_loss_vehicle, root_pt, subroot_pt_animal, subroot_pt_vehicle
 
     def wrap_loss_fn(self, logits_set, y):
