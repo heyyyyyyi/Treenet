@@ -29,11 +29,12 @@ from core.utils import seed
 from core import animal_classes, vehicle_classes
 
 import wandb
+from gowal21uncovering.utils import WATrainer  # Add WATrainer import
 
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
 _WANDB_PROJECT = "baseline-adv-resnet20"
 
-def setup_training(args, desc, num_classes, filter_classes=None):
+def setup_training(args, desc, num_classes, filter_classes=None, pseudo_label_classes=None):
     """Setup training environment and return necessary objects."""
     args.desc = desc
     args.num_classes = num_classes
@@ -64,30 +65,36 @@ def setup_training(args, desc, num_classes, filter_classes=None):
     if args.debug:
         NUM_ADV_EPOCHS = 1
 
+    # To speed up training
     torch.backends.cudnn.benchmark = True
 
-    # Load data
+    # Load data for binary classification (1 for animal_classes, 0 for others)
     seed(args.seed)
     train_dataset, test_dataset, train_dataloader, test_dataloader = load_data(
         DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, use_augmentation=args.augment, shuffle_train=True, 
         aux_data_filename=args.aux_data_filename, unsup_fraction=args.unsup_fraction, 
-        filter_classes=filter_classes
+        filter_classes=filter_classes, pseudo_label_classes=pseudo_label_classes
     )
     del train_dataset, test_dataset
 
     return logger, info, train_dataloader, test_dataloader, NUM_ADV_EPOCHS, device, WEIGHTS, LOG_DIR
 
-def run_training(desc, num_classes, filter_classes=None, eval_metrics=None):
+def run_training(desc, num_classes, filter_classes=None, eval_metrics=None, pseudo_label_classes=None):
     # Setup
     parse = parser_train()
     args = parse.parse_args()
     logger, info, train_dataloader, test_dataloader, NUM_ADV_EPOCHS, device, WEIGHTS, LOG_DIR = setup_training(
-        args, desc, num_classes, filter_classes
+        args, desc, num_classes, filter_classes=filter_classes, pseudo_label_classes=pseudo_label_classes
     )
 
     # Model and Trainer setup
     seed(args.seed)
-    trainer = Trainer(info, args)
+    if args.tau:
+        logger.log('Using WA.')
+        trainer = WATrainer(info, args)
+    else:
+        trainer = Trainer(info, args)
+
     logger.log("Model Summary:")
     try:
         from torchsummary import summary
@@ -124,7 +131,7 @@ def run_training(desc, num_classes, filter_classes=None, eval_metrics=None):
         epoch_metrics.update({'epoch': epoch, 'lr': last_lr})
 
         # Update metrics based on configuration
-        if "10" in args.desc:
+        if "bi" in eval_metrics:
             epoch_metrics.update({
                 'test_clean_acc': test_res['acc'],
                 'test_clean_acc_animal': test_res['acc_animal'],
@@ -135,7 +142,7 @@ def run_training(desc, num_classes, filter_classes=None, eval_metrics=None):
                 'test_adversarial_acc_vehicle': None,
                 'test_adversarial_acc_bi': None,
             })
-        elif "6" in args.desc:
+        elif "animal" in eval_metrics:
             epoch_metrics.update({
                 'test_clean_acc_animal': test_res['acc'],
                 'test_adversarial_acc_animal': None,
@@ -150,14 +157,14 @@ def run_training(desc, num_classes, filter_classes=None, eval_metrics=None):
         if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
             test_adv_res = trainer.eval(test_dataloader, adversarial=True)
             test_adv_acc = test_adv_res['acc']
-            if "10" in args.desc:
+            if "bi" in eval_metrics:
                 epoch_metrics.update({
                     'test_adversarial_acc': test_adv_res['acc'],
                     'test_adversarial_acc_animal': test_adv_res['acc_animal'],
                     'test_adversarial_acc_vehicle': test_adv_res['acc_vehicle'],
                     'test_adversarial_acc_bi': test_adv_res['acc_bi'],
                 })
-            elif "6" in args.desc:
+            elif "animal" in eval_metrics:
                 epoch_metrics['test_adversarial_acc_animal'] = test_adv_res['acc']
             else:
                 epoch_metrics['test_adversarial_acc_vehicle'] = test_adv_res['acc']
@@ -189,6 +196,6 @@ def run_training(desc, num_classes, filter_classes=None, eval_metrics=None):
     wandb.finish()
 
 # Run training for three configurations
-run_training(desc="400_10-class", num_classes=10, eval_metrics=["animal", "vehicle", "bi"])
-run_training(desc="400_6-class-animal", num_classes=6, filter_classes=animal_classes, eval_metrics=["animal"])
-run_training(desc="400_4-class-vehicle", num_classes=4, filter_classes=vehicle_classes, eval_metrics=["vehicle"])
+# run_training(desc="400_10-class", num_classes=10, eval_metrics=["animal", "vehicle", "bi"])
+# run_training(desc="400_6-class-animal", num_classes=6, filter_classes=animal_classes, eval_metrics=["animal"])
+# run_training(desc="400_4-class-vehicle", num_classes=4, filter_classes=vehicle_classes, eval_metrics=["vehicle"])

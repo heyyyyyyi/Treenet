@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import argparse
 
 from core.attacks import create_attack
-from core.metrics import accuracy, binary_accuracy, subclass_accuracy
+from core.metrics import accuracy, binary_accuracy, subclass_accuracy, accuracy_exclude_other
 from .model import create_model
 
 from core.utils.context import ctx_noparamgrad_and_eval
@@ -28,7 +28,9 @@ from gowal21uncovering.utils import WATrainer
 import shutil
 import time
 from core.utils import format_time
+from .train import focal_loss_with_pt
 
+from functools import partial
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -42,13 +44,18 @@ class Trainer(object):
         info (dict): dataset information.
         args (dict): input arguments.
     """
-    def __init__(self, info, args):
+    def __init__(self, info, args, other_label, weighted_loss):
         super(Trainer, self).__init__()
         seed(args.seed)
-        self.model = create_model(args.model, args.normalize, info, device)
+        self.model = create_model(args.model, args.normalize, info, device, num_classes=args.num_classes)
             
         self.params = args
-        self.criterion = nn.CrossEntropyLoss()
+        # Pass weighted_loss to CrossEntropyLoss
+        self.criterion = nn.CrossEntropyLoss(weight=torch.tensor(weighted_loss).to(device) if weighted_loss else None)
+
+        #self.criterion = partial(focal_loss_with_pt, weights=torch.tensor(weighted_loss).to(device) if weighted_loss else None)
+
+
         self.init_optimizer(self.params.num_adv_epochs)
         
         if self.params.pretrained_file is not None:
@@ -56,7 +63,9 @@ class Trainer(object):
         
         self.attack, self.eval_attack = self.init_attack(self.model, self.criterion, self.params.attack, self.params.attack_eps, 
                                                          self.params.attack_iter, self.params.attack_step)
-                                                         
+
+        self.other_label = other_label     
+
     @staticmethod
     def init_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step):
         """
@@ -112,30 +121,28 @@ class Trainer(object):
         self.model.train()
 
         for data in tqdm(dataloader, desc=f'Epoch {epoch}: ', disable=not verbose):
-            try:
-                x, y = data
-                x, y = x.to(device), y.to(device)
+            
+            x, y = data
+            x, y = x.to(device), y.to(device)
 
-                if adversarial:
-                    if self.params.beta is not None and self.params.mart:
-                        loss, batch_metrics = self.mart_loss(x, y, beta=self.params.beta)
-                    elif self.params.beta is not None:
-                        loss, batch_metrics = self.trades_loss(x, y, beta=self.params.beta)
-                    else:
-                        loss, batch_metrics = self.adversarial_loss(x, y)
+            if adversarial:
+                if self.params.beta is not None and self.params.mart:
+                    loss, batch_metrics = self.mart_loss(x, y, beta=self.params.beta)
+                elif self.params.beta is not None:
+                    loss, batch_metrics = self.trades_loss(x, y, beta=self.params.beta)
                 else:
-                    loss, batch_metrics = self.standard_loss(x, y)
+                    loss, batch_metrics = self.adversarial_loss(x, y)
+            else:
+                loss, batch_metrics = self.standard_loss(x, y)
 
-                loss.backward()
-                if self.params.clip_grad:
-                    nn.utils.clip_grad_norm_(self.model.parameters(), self.params.clip_grad)
-                self.optimizer.step()
-                if self.params.scheduler in ['cyclic']:
-                    self.scheduler.step()
+            loss.backward()
+            if self.params.clip_grad:
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.params.clip_grad)
+            self.optimizer.step()
+            if self.params.scheduler in ['cyclic']:
+                self.scheduler.step()
 
-                metrics = pd.concat([metrics, pd.DataFrame(batch_metrics, index=[0])], ignore_index=True)
-            except Exception as e:
-                print(f"Error during training batch: {e}")
+            metrics = pd.concat([metrics, pd.DataFrame(batch_metrics, index=[0])], ignore_index=True)
 
         if self.params.scheduler in ['step', 'converge', 'cosine', 'cosinew']:
             self.scheduler.step()
@@ -148,10 +155,11 @@ class Trainer(object):
         """
         self.optimizer.zero_grad()
         out = self.model(x)
+        # Ensure the criterion uses the weighted loss
         loss = self.criterion(out, y)
         
         preds = out.detach()
-        batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy(y, preds)}
+        batch_metrics = {'loss': loss.item(), 'clean_acc': accuracy_exclude_other(y, preds, self.other_label)}
         return loss, batch_metrics
     
     
@@ -159,6 +167,7 @@ class Trainer(object):
         """
         Adversarial training (Madry et al, 2017).
         """
+        #print(y.unique())
         with ctx_noparamgrad_and_eval(self.model):
             x_adv, _ = self.attack.perturb(x, y)
         
@@ -170,15 +179,18 @@ class Trainer(object):
             y_adv = y
             
         out = self.model(x_adv)
+        
+        # Ensure the criterion uses the weighted loss
         loss = self.criterion(out, y_adv)
+        #print(f"Loss: {loss.item()}")
         
         preds = out.detach()
         batch_metrics = {'loss': loss.item()}
         if self.params.keep_clean:
             preds_clean, preds_adv = preds[:len(x)], preds[len(x):]
-            batch_metrics.update({'clean_acc': accuracy(y, preds_clean), 'adversarial_acc': accuracy(y, preds_adv)})
+            batch_metrics.update({'clean_acc': accuracy_exclude_other(y, preds_clean, self.other_label), 'adversarial_acc': accuracy(y, preds_adv)})
         else:
-            batch_metrics.update({'adversarial_acc': accuracy(y, preds)})    
+            batch_metrics.update({'adversarial_acc': accuracy_exclude_other(y, preds, self.other_label)})    
         return loss, batch_metrics
     
     
@@ -231,7 +243,7 @@ class Trainer(object):
                 out = self.model(x_adv)
             else:
                 out = self.model(x)
-            acc += accuracy(y, out)
+            acc += accuracy_exclude_other(y, out, self.other_label)
             temp_acc_animal, temp_acc_vehicle = subclass_accuracy(y, out)
             acc_animal += temp_acc_animal
             acc_vehicle += temp_acc_vehicle
@@ -280,7 +292,7 @@ def setup_data(data_dir, batch_size, batch_size_validation, args, filter_classes
     return train_dataloader, test_dataloader
 
 # run_individual_train.py
-def run_training(info, temp_args, logger, train_dataloader, test_dataloader, desc, num_classes, filter_classes=None, eval_metrics=None):
+def run_training(info, temp_args, logger, train_dataloader, test_dataloader, desc, num_classes, eval_metrics=None, other_label=None, weighted_loss = None):
     # setup new runs in wandb
     # copy args 
     args = argparse.Namespace(**vars(temp_args))
@@ -316,7 +328,7 @@ def run_training(info, temp_args, logger, train_dataloader, test_dataloader, des
         logger.log('Using WA.')
         trainer = WATrainer(info, args)
     else:
-        trainer = Trainer(info, args)
+        trainer = Trainer(info, args, other_label=other_label, weighted_loss=weighted_loss)
     
     logger.log("Model Summary:")
     try:

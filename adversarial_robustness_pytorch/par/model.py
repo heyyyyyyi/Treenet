@@ -160,7 +160,7 @@ def lighttreeresnet(name, num_classes=10, device='cpu', unkown_classes=False):
     raise ValueError('Only lighttreeresnet20 is supported!')
     return
 
-def create_model(name, normalize, info, device, unknown_classes=False):
+def create_model(name, normalize, info, device, unknown_classes=False, num_classes=10):
     """
     Returns suitable model from its name.
     Arguments:
@@ -172,7 +172,7 @@ def create_model(name, normalize, info, device, unknown_classes=False):
         torch.nn.Module.
     """
     if "tree" in name:
-        backbone = lighttreeresnet(name, num_classes=info['num_classes'], unkown_classes=unknown_classes, device=device)
+        backbone = lighttreeresnet(name, num_classes=num_classes, unkown_classes=unknown_classes, device=device)
         if normalize:
             normalization_layer = Normalization(info['mean'], info['std']).to(device)
             backbone.root_model = torch.nn.Sequential(normalization_layer, backbone.root_model)
@@ -185,7 +185,7 @@ def create_model(name, normalize, info, device, unknown_classes=False):
         return backbone.to(device)
     
     else: 
-        backbone = lightresnet(name, num_classes=info['num_classes'], device=device)
+        backbone = lightresnet(name, num_classes=num_classes, device=device)
         if normalize:
             normalization_layer = Normalization(info['mean'], info['std']).to(device)
             backbone = torch.nn.Sequential(normalization_layer, backbone)

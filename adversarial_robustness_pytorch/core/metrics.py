@@ -60,4 +60,23 @@ def subclass_accuracy(true, preds):
 
     return acc_animal.item(), acc_vehicle.item()
 
+def accuracy_exclude_other(true, preds, other_label=None):
+    """
+    Computes accuracy excluding the 'other' class (10).
+    Arguments:
+        true (torch.Tensor): true labels.
+        preds (torch.Tensor): predicted labels.
+    Returns:
+        Accuracy excluding the 'other' class.
+    """
+    if other_label is None:
+        accuracy = (torch.softmax(preds, dim=1).argmax(dim=1) == true).sum().float()/float(true.size(0))
+        return accuracy.item()
+    
+    mask = torch.isin(true, torch.tensor(other_label, device=true.device), invert=True)
+    if not mask.any():
+        return torch.tensor(0.0, device=true.device).item()
+    accuracy = (torch.softmax(preds[mask], dim=1).argmax(dim=1) == true[mask]).sum().float() / float(mask.sum())
+    return accuracy.item()
+
     

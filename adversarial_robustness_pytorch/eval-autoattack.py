@@ -18,7 +18,7 @@ from autoattack import AutoAttack
     
 from core.data import get_data_info
 from core.data import load_data
-from par.model import create_model
+from core.models import create_model
 
 from core.utils import Logger
 from core.utils import parser_eval
@@ -27,13 +27,10 @@ from core.utils import seed
 from core import animal_classes, vehicle_classes
 
 import wandb
-from par.train import TreeEnsemble
 
 # Setup
 
 parse = parser_eval()
-parse.add_argument('--softroute', type=bool, default=False, help='Use soft routing for the tree ensemble.')
-parse.add_argument('--unknown_classes', type=bool, default=False, help='Use unknown classes for the tree ensemble.')
 args = parse.parse_args()
 
 LOG_DIR = os.path.join(args.log_dir, args.desc)
@@ -82,7 +79,7 @@ else:
 
 # Model
 print('Creating model: {}'.format(args.model))
-model = create_model(args.model, args.normalize, info, device, unknown_classes=args.unknown_classes)
+model = create_model(args.model, args.normalize, info, device)
 checkpoint = torch.load(WEIGHTS)
 if 'tau' in args and args.tau:
     print('Using WA model.')
@@ -92,42 +89,54 @@ del checkpoint
 
 # Wrap model for TreeEnsemble forward logic
 class TreeModelWrapper(nn.Module):
-    def __init__(self, model, softroute=False,):
+    def __init__(self, model, softroute=False):
         super(TreeModelWrapper, self).__init__()
         self.model = model
         self.softroute = softroute
 
     def forward(self, x):
+        if not self.softroute:
+            root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
 
-        root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
-        root_probs = torch.softmax(root_logits, dim=1)
+            root_pred = torch.argmax(root_logits, dim=1)
+
+            subroot_logits = torch.zeros_like(root_logits)
+            animal_classes_index = torch.tensor(animal_classes, device=root_pred.device)
+            vehicle_classes_index = torch.tensor(vehicle_classes, device=root_pred.device)
+
+            is_animal = torch.isin(root_pred, animal_classes_index)
+            is_vehicle = torch.isin(root_pred, vehicle_classes_index)
+
+            # Fix for animal subroot logits
+            if is_animal.any():
+                subroot_logits[is_animal] = subroot_animal_logits[is_animal]
+            if is_vehicle.any():
+                subroot_logits[is_vehicle] = subroot_vehicle_logits[is_vehicle]
+
+            return subroot_logits
+        
+        else:
+            # weighted logits for soft routing
+            root_logits, subroot_animal_logits, subroot_vehicle_logits = self.model(x)
+
+            root_probs = torch.softmax(root_logits, dim=1)
 
             # animal mask: shape [B, 1]，每个样本是否属于 animal coarse 的置信度
-        animal_score = root_probs[:, animal_classes].sum(dim=1, keepdim=True)
-        vehicle_score = root_probs[:, vehicle_classes].sum(dim=1, keepdim=True)
-        
-        animal_classes_index = torch.tensor(animal_classes, device=animal_score.device)
-        vehicle_classes_index = torch.tensor(vehicle_classes, device=vehicle_score.device)
+            animal_score = root_probs[:, animal_classes].sum(dim=1, keepdim=True)
+            vehicle_score = root_probs[:, vehicle_classes].sum(dim=1, keepdim=True)
 
-        animal_logits = torch.full_like(root_logits, fill_value=-5.0)
-        vehicle_logits = torch.full_like(root_logits, fill_value=-5.0)
+            # Normalize
+            total = animal_score + vehicle_score + 1e-8
+            w_animal = animal_score / total
+            w_vehicle = vehicle_score / total
+            w_root = 1.0 - w_animal - w_vehicle
 
-        animal_logits[:, animal_classes_index] = subroot_animal_logits[:, :-1]
-        vehicle_logits[:, vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
+            # shape broadcast
+            final_logits = w_root * root_logits + w_animal * subroot_animal_logits + w_vehicle * subroot_vehicle_logits
+            return final_logits
 
-        # Normalize
-        total = animal_score + vehicle_score + 1e-8
-        w_animal = animal_score / total
-        w_vehicle = vehicle_score / total
-        w_root = 1.0 - w_animal - w_vehicle
-
-        # shape broadcast
-        final_logits = w_root*root_logits+ w_animal * animal_logits + w_vehicle * vehicle_logits
-        return final_logits
-    
 if "tree" in args.model:
-    model = TreeModelWrapper(model)
-
+    model = TreeModelWrapper(model, softroute=False)
 
 # AA Evaluation
 

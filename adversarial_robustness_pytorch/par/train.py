@@ -23,11 +23,17 @@ from core.utils.context import ctx_noparamgrad_and_eval
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def focal_loss_with_pt(logits, targets, gamma=2.0, reduction='mean'):
+def focal_loss_with_pt(logits, targets, gamma=2.0, reduction='mean', weights = None):
     """
     Multi-class focal loss with pt recording.
     logits: [N, C]
     targets: [N]
+    gamma: Focal loss gamma parameter
+    reduction: 'mean', 'sum', or 'none'
+    weights: Optional class weights for focal loss
+    Returns:
+        loss: Computed focal loss
+        pt: Probability of the true class
     """
     log_probs = F.log_softmax(logits, dim=1)  # [N, C]
     probs = torch.exp(log_probs)              # [N, C]
@@ -37,7 +43,13 @@ def focal_loss_with_pt(logits, targets, gamma=2.0, reduction='mean'):
     log_pt = (log_probs * targets_one_hot).sum(dim=1)  # [N]
 
     focal_term = (1 - pt) ** gamma
-    loss = -focal_term * log_pt                    # [N]
+    #loss = -focal_term * log_pt                    # [N]
+
+    if weights is not None:
+        class_weight = weights[targets]              # [N]
+        loss = -class_weight * focal_term * log_pt  # [N]
+    else:
+        loss = -focal_term * log_pt                 # [N]
 
     if reduction == 'mean':
         return loss.mean(), pt
@@ -56,6 +68,8 @@ class TreeEnsemble(object):
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,
         gamma: float = 2.0,  # Focal loss gamma parameter
+        loss_weights_animal = None,
+        loss_weights_vehicle = None,
 
     ):
         
@@ -88,6 +102,8 @@ class TreeEnsemble(object):
         self.attack, self.eval_attack = self.init_attack(self.model, self.wrap_loss_fn, self.params.attack, self.params.attack_eps, 
                                                          self.params.attack_iter, self.params.attack_step)
         
+        self.loss_weights_animal = loss_weights_animal
+        self.loss_weights_vehicle = loss_weights_vehicle
 
     @staticmethod
     def init_attack(model, criterion, attack_type, attack_eps, attack_iter, attack_step):
@@ -315,8 +331,8 @@ class TreeEnsemble(object):
             y_animal = map_labels_to_subroots(y_animal, animal_classes)
             y_vehicle = map_labels_to_subroots(y_vehicle, vehicle_classes)
 
-            subroot_loss_animal, subroot_pt_animal = self.criterion(logits_animal, y_animal, gamma=self.gamma)
-            subroot_loss_vehicle, subroot_pt_vehicle = self.criterion(logits_vehicle, y_vehicle, gamma=self.gamma)
+            subroot_loss_animal, subroot_pt_animal = self.criterion(logits_animal, y_animal, gamma=self.gamma, weights=torch.tensor(self.loss_weights_animal).to(device))
+            subroot_loss_vehicle, subroot_pt_vehicle = self.criterion(logits_vehicle, y_vehicle, gamma=self.gamma, weights=torch.tensor(self.loss_weights_vehicle).to(device))
 
             # Combine losses
             loss = self.alpha1*root_loss + self.alpha2 * subroot_loss_animal + self.alpha3 * subroot_loss_vehicle

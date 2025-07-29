@@ -80,77 +80,75 @@ del train_dataset, test_dataset
 if args.train_submodels:
     from par.individual_train import run_training, setup_data
     logger.log("Training sub-models independently...")
-    try:
 
-        # Train root model
-        wandb.init(
-            project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
-            name=f"{args.desc}-root",
-            reinit=True,
-        )
-        run_training(
-            info=info, temp_args=args, logger=logger, train_dataloader=train_dataloader, test_dataloader=test_dataloader,
-            desc="10-class", num_classes=10, eval_metrics=["animal", "vehicle", "bi"]
-        )
-        wandb.finish()
+    # Train root model
+    # wandb.init(
+    #     project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
+    #     name=f"{args.desc}-root",
+    #     reinit=True,
+    # )
+    # run_training(
+    #     info=info, temp_args=args, logger=logger, train_dataloader=train_dataloader, test_dataloader=test_dataloader,
+    #     desc="10-class", num_classes=10, eval_metrics=["animal", "vehicle", "bi"]
+    # )
+    # wandb.finish()
 
-        breakpoint()
-        
-        # Train subroot animal model
-        if args.unknown_classes:
-            pseudo_label_classes = animal_classes
-            desc = "7-class-animal"
-            num_classes = 7
-        else:
-            pseudo_label_classes = None
-            desc = "6-class-animal"
-            num_classes = 6
+    #breakpoint()
+    
+    # Train subroot animal model
+    if args.unknown_classes:
+        pseudo_label_classes = animal_classes
+        desc = "7-class-animal"
+        num_classes = 7
+    else:
+        pseudo_label_classes = None
+        desc = "6-class-animal"
+        num_classes = 6
 
-        animal_train_dataloader, animal_test_dataloader = setup_data(
-            DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=None, pseudo_label_classes=pseudo_label_classes
-        )
-        wandb.init(
-            project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
-            name=f"{args.desc}-{desc}",
-            reinit=True,
-        )
-        run_training(
-            info=info, temp_args=args, logger=logger, train_dataloader=animal_train_dataloader, test_dataloader=animal_test_dataloader,
-            desc=desc, num_classes=num_classes, eval_metrics=["animal"]
-        )
-        # Clean up dataloaders
-        del animal_train_dataloader, animal_test_dataloader
-        wandb.finish()
+    animal_train_dataloader, animal_test_dataloader = setup_data(
+        DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=None, pseudo_label_classes=pseudo_label_classes
+    )
+    wandb.init(
+        project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
+        name=f"{args.desc}-{desc}",
+        reinit=True,
+    )
+    run_training(
+        info=info, temp_args=args, logger=logger, train_dataloader=animal_train_dataloader, test_dataloader=animal_test_dataloader,
+        desc=desc, num_classes=num_classes, eval_metrics=["animal"], other_label=vehicle_classes if args.unknown_classes else None, 
+        weighted_loss=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2] if args.unknown_classes else None
+    )
+    # Clean up dataloaders
+    del animal_train_dataloader, animal_test_dataloader
+    wandb.finish()
 
-        # Train subroot vehicle model
-        if args.unknown_classes:
-            pseudo_label_classes = vehicle_classes
-            desc = "5-class-vehicle"
-            num_classes = 5
-        else:
-            pseudo_label_classes = None
-            desc = "4-class-vehicle"
-            num_classes = 4
+    # Train subroot vehicle model
+    if args.unknown_classes:
+        pseudo_label_classes = vehicle_classes
+        desc = "5-class-vehicle"
+        num_classes = 5
+    else:
+        pseudo_label_classes = None
+        desc = "4-class-vehicle"
+        num_classes = 4
 
-        vehicle_train_dataloader, vehicle_test_dataloader = setup_data(
-            DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=None, pseudo_label_classes=pseudo_label_classes
-        )
-        wandb.init(
-            project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
-            name=f"{args.desc}-{desc}",
-            reinit=True,
-        )
-        run_training(
-            info=info, temp_args=args, logger=logger, train_dataloader=vehicle_train_dataloader, test_dataloader=vehicle_test_dataloader,
-            desc=desc, num_classes=num_classes, eval_metrics=["vehicle"]
-        )
-        # Clean up dataloaders
-        del vehicle_train_dataloader, vehicle_test_dataloader
-        wandb.finish()
+    vehicle_train_dataloader, vehicle_test_dataloader = setup_data(
+        DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=None, pseudo_label_classes=pseudo_label_classes
+    )
+    wandb.init(
+        project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
+        name=f"{args.desc}-{desc}",
+        reinit=True,
+    )
+    run_training(
+        info=info, temp_args=args, logger=logger, train_dataloader=vehicle_train_dataloader, test_dataloader=vehicle_test_dataloader,
+        desc=desc, num_classes=num_classes, eval_metrics=["vehicle"], other_label=animal_classes if args.unknown_classes else None, 
+        weighted_loss=[1.0, 1.0, 1.0, 1.0, 0.2] if args.unknown_classes else None
+    )
+    # Clean up dataloaders
+    del vehicle_train_dataloader, vehicle_test_dataloader
+    wandb.finish()
 
-    except Exception as e:
-        logger.log(f"Error during sub-model training: {e}")
-        exit(1)
 
 # Initialize wandb at the end to log final metrics
 wandb.init(
@@ -160,7 +158,8 @@ wandb.init(
 )
 
 # Initialize TreeEnsemble
-trainer = TreeEnsemble(info, args)
+trainer = TreeEnsemble(info, args, loss_weights_animal=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2] if args.unknown_classes else None,
+                       loss_weights_vehicle=[1.0, 1.0, 1.0, 1.0, 0.2] if args.unknown_classes else None)
 
 # Load pre-trained sub-models if specified
 if args.pretrained:
