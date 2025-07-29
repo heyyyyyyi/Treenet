@@ -62,9 +62,9 @@ def focal_loss_with_pt(logits, targets, gamma=2.0, reduction='mean', weights = N
 class TreeEnsemble(object):
     def __init__(self, 
         info, args,
-        alpha1: float = 0.5,
-        alpha2: float = 0.3,
-        alpha3: float = 0.3,
+        alpha1: float = 1,
+        alpha2: float = 1,
+        alpha3: float = 1,
         max_epochs: int = 100,  # Total number of training epochs
         alpha_update_strategy: dict = None,
         gamma: float = 2.0,  # Focal loss gamma parameter
@@ -180,15 +180,10 @@ class TreeEnsemble(object):
 
         elif strategy == 'linear':
             progress = current_epoch / self.max_epochs
-            self.alpha1 = max(0.01, 0.9 - 0.9 * progress)
-            alpha23_total = 0.1 + 0.9 * progress
-
-            if callable(self.alpha_update_strategy):
-                self.alpha2, self.alpha3 = self.alpha_update_strategy(alpha23_total, progress)
-            else:
-                balance_ratio = self.alpha_update_strategy.get("balance_ratio", 1)
-                self.alpha2 = alpha23_total * balance_ratio / (1 + balance_ratio)
-                self.alpha3 = alpha23_total / (1 + balance_ratio)
+            self.alpha1 = self.alpha1*(1-progress)
+            self.alpha2 = self.alpha2*(1-progress)
+            self.alpha3 = self.alpha3*(1-progress)
+            
         elif strategy == 'decay':
             self.alpha1 *= decay_factor
 

@@ -181,11 +181,20 @@ logger.log("Total Trainable Parameters: {}".format(count_parameters(trainer.mode
 
 last_lr = args.lr
 
+# save initial model weights
+if not os.path.exists(WEIGHTS):
+    logger.log('Saving initial model weights to {}'.format(WEIGHTS))
+    trainer.save_model(WEIGHTS)
+
+breakpoint()
+
 # Adversarial Training
 if NUM_ADV_EPOCHS > 0:
     logger.log('\n\n')
     metrics = pd.DataFrame()
     logger.log('Standard Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader)['acc']*100))
+    # 记录初始对抗准确率
+    logger.log('Adversarial Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader, adversarial=True)['acc']*100))
     
     old_score = [0.0, 0.0]
     logger.log('Adversarial training for {} epochs'.format(NUM_ADV_EPOCHS))
