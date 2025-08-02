@@ -1,6 +1,8 @@
 """
-Adversarial Training. (Tree)
-"""
+Adversarial Training. (par_x network)
+
+must require unknown classes flag 
+""" 
 
 import json
 import time
@@ -21,7 +23,7 @@ from core.utils import format_time
 from core.utils import Logger
 from core.utils import parser_train
 
-from par.train import TreeEnsemble
+from par_x.train import ParEnsemble
 from par.individual_train import run_training, setup_data
 
 
@@ -40,9 +42,9 @@ parse = parser_train()
 # 添加参数
 parse.add_argument('--decay_factor', type=float, default=0.98, help='Decay factor for alpha values.')
 parse.add_argument('--strategy', type=str, default='constant', choices=['exponential', 'linear', 'constant'], help='Strategy for alpha decay.')
-parse.add_argument('--softroute', type=bool, default=True, help='Use soft routing for the tree ensemble.')
-parse.add_argument('--unknown_classes', type=bool, default=True, help='Use unknown classes for the tree ensemble.')
-parse.add_argument('--pretrained', type=bool, default=True, help='Load pre-trained sub-models.')
+#parse.add_argument('--softroute', type=bool, default=True, help='Use soft routing for the tree ensemble.')
+#parse.add_argument('--unknown_classes', type=bool, default=True, help='Use unknown classes for the tree ensemble.')
+#parse.add_argument('--pretrained', type=bool, default=True, help='Load pre-trained sub-models.')
 parse.add_argument('--train_submodels', type=bool, default=False, help='Train sub-models independently before ensemble training.')
 args = parse.parse_args()
 
@@ -80,28 +82,12 @@ del train_dataset, test_dataset
 if args.train_submodels:
     from par.individual_train import run_training, setup_data
     logger.log("Training sub-models independently...")
-
-    #Train root model
-    wandb.init(
-        project=_WANDB_PROJECT, entity=_WANDB_USERNAME,
-        name=f"{args.desc}-root",
-        reinit=True,
-    )
-    run_training(
-        info=info, temp_args=args, logger=logger, train_dataloader=train_dataloader, test_dataloader=test_dataloader,
-        desc="10-class", num_classes=10, eval_metrics=["animal", "vehicle", "bi"]
-    )
-    wandb.finish()
     
     # Train subroot animal model
-    if args.unknown_classes:
-        pseudo_label_classes = animal_classes
-        desc = "7-class-animal"
-        num_classes = 7
-    else:
-        pseudo_label_classes = None
-        desc = "6-class-animal"
-        num_classes = 6
+    pseudo_label_classes = animal_classes
+    desc = "7-class-animal_parx"
+    num_classes = 7
+   
 
     animal_train_dataloader, animal_test_dataloader = setup_data(
         DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=None, pseudo_label_classes=pseudo_label_classes
@@ -121,14 +107,9 @@ if args.train_submodels:
     wandb.finish()
 
     # Train subroot vehicle model
-    if args.unknown_classes:
-        pseudo_label_classes = vehicle_classes
-        desc = "5-class-vehicle"
-        num_classes = 5
-    else:
-        pseudo_label_classes = None
-        desc = "4-class-vehicle"
-        num_classes = 4
+    pseudo_label_classes = vehicle_classes
+    desc = "5-class-vehicle_parx"
+    num_classes = 5
 
     vehicle_train_dataloader, vehicle_test_dataloader = setup_data(
         DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=None, pseudo_label_classes=pseudo_label_classes
@@ -155,28 +136,24 @@ wandb.init(
     reinit=True,
 )
 
-# Initialize TreeEnsemble
-trainer = TreeEnsemble(info, args, loss_weights_animal=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2] if args.unknown_classes else None,
-                       loss_weights_vehicle=[1.0, 1.0, 1.0, 1.0, 0.2] if args.unknown_classes else None)
+# Initialize ParEnsemble
+trainer = ParEnsemble(info, args, loss_weights_animal=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2] ,
+                      loss_weights_vehicle=[1.0, 1.0, 1.0, 1.0, 0.2] )
 
 # Load pre-trained sub-models if specified
-if args.pretrained:
-    logger.log("Loading pre-trained sub-models...")
-    root_model_path = os.path.join(args.log_dir, "10-class/weights-best.pt")
-    if args.unknown_classes:
-        animal_model_path = os.path.join(args.log_dir, "7-class-animal/weights-best.pt")
-        vehicle_model_path = os.path.join(args.log_dir, "5-class-vehicle/weights-best.pt")
-    else:
-        animal_model_path = os.path.join(args.log_dir, "6-class-animal/weights-best.pt")
-        vehicle_model_path = os.path.join(args.log_dir, "4-class-vehicle/weights-best.pt")
-    trainer.load_individual_models(root_model_path, animal_model_path, vehicle_model_path)
+logger.log("Loading pre-trained sub-models...")
+trainer.load_pretrained_submodels()
+animal_model_path = os.path.join(args.log_dir, "7-class-animal_parx", "weights-best.pt")
+vehicle_model_path = os.path.join(args.log_dir, "5-class-vehicle_parx", "weights-best.pt")
+trainer.load_individual_models(
+    animal_model_path=animal_model_path, vehicle_model_path=vehicle_model_path
+)
 
 logger.log("Model Summary:")
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-logger.log("Total Trainable Parameters: {}".format(count_parameters(trainer.model)))
-
+logger.log(f"Total parameters: {count_parameters(trainer)}")
 last_lr = args.lr
 
 # save initial model weights
@@ -204,9 +181,8 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     logger.log('======= Epoch {} ======='.format(epoch))
     
     # 提取学习率
-    root_lr = trainer.optimizer.param_groups[0]['lr']
-    subroot_animal_lr = trainer.optimizer.param_groups[1]['lr']
-    subroot_vehicle_lr = trainer.optimizer.param_groups[2]['lr']
+    subroot_animal_lr = trainer.optimizer.param_groups[0]['lr']
+    subroot_vehicle_lr = trainer.optimizer.param_groups[1]['lr']
 
     if args.scheduler:
         last_lr = trainer.scheduler.get_last_lr()[0]
@@ -214,15 +190,13 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     res = trainer.train(train_dataloader, epoch=epoch, adversarial=True)
     test_res = trainer.eval(test_dataloader)
     test_acc = test_res['acc']
-    root_acc = test_res['root_acc']
-    root_acc_bi = test_res['root_acc_bi']
     acc_animal = test_res['acc_animal']
     acc_vehicle = test_res['acc_vehicle']
 
     alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, args.decay_factor)
 
-    logger.log('Loss: {:.4f}.\tRoot LR: {:.6f}.\tSubroot Animal LR: {:.6f}.\tSubroot Vehicle LR: {:.6f}'.format(
-        res['loss'], root_lr, subroot_animal_lr, subroot_vehicle_lr
+    logger.log('Loss: {:.4f}.\tSubroot Animal LR: {:.6f}.\tSubroot Vehicle LR: {:.6f}'.format(
+        res['loss'], subroot_animal_lr, subroot_vehicle_lr
     ))
     
     if 'clean_acc' in res:
@@ -233,40 +207,27 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
     epoch_metrics = {'train_'+k: v for k, v in res.items()}
     epoch_metrics.update({
         'epoch': epoch,
-        'lr_root': root_lr,
         'lr_subroot_animal': subroot_animal_lr,
         'lr_subroot_vehicle': subroot_vehicle_lr,
         'test_clean_acc': test_acc,
-        'test_clean_acc_bi': root_acc_bi,
-        'test_clean_root_acc': root_acc,
         'test_clean_acc_animal': acc_animal,
         'test_clean_acc_vehicle': acc_vehicle,
         'test_adversarial_acc': None,
         'test_adversarial_acc_animal': None,
         'test_adversarial_acc_vehicle': None,
-        'test_adversarial_root_acc': None,
-        'test_adversarial_acc_bi': None,
     })
     
     if epoch % args.adv_eval_freq == 0 or epoch > (NUM_ADV_EPOCHS-5) or (epoch >= (NUM_ADV_EPOCHS-10) and NUM_ADV_EPOCHS > 90):
         test_adv_res = trainer.eval(test_dataloader, adversarial=True)
         test_adv_acc = test_adv_res['acc']
-        test_adv_root_acc = test_adv_res['root_acc']
-        test_adv_root_acc_bi = test_adv_res['root_acc_bi']
         test_adv_acc_animal = test_adv_res['acc_animal']
         test_adv_acc_vehicle = test_adv_res['acc_vehicle']
-        # test_adv_root_acc_animal = test_adv_res['root_acc_animal']
-        # test_adv_root_acc_vehicle = test_adv_res['root_acc_vehicle']
 
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, 
                                                                                    test_adv_acc*100))
         epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
-        epoch_metrics.update({'test_adversarial_root_acc': test_adv_root_acc})
-        epoch_metrics.update({'test_adversarial_acc_bi': test_adv_root_acc_bi})
         epoch_metrics.update({'test_adversarial_acc_animal': test_adv_acc_animal})
         epoch_metrics.update({'test_adversarial_acc_vehicle': test_adv_acc_vehicle})
-        # epoch_metrics.update({'test_adversarial_root_acc_animal': test_adv_root_acc_animal})
-        # epoch_metrics.update({'test_adversarial_root_acc_vehicle': test_adv_root_acc_vehicle})
 
     else:
         logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.'.format(res['adversarial_acc']*100))
