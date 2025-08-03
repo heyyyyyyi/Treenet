@@ -136,7 +136,7 @@ def lighttreeresnet(name, num_classes=10, device='cpu', unkown_classes=False):
     raise ValueError('Only lighttreeresnet20 is supported!')
     return
 
-def create_model(name, normalize, info, device, unknown_classes=False, num_classes=10):
+def create_model(name, normalize, info, device, unknown_classes=True, num_classes=10):
     """
     Returns suitable model from its name.
     Arguments:

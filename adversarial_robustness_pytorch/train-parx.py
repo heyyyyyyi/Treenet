@@ -45,7 +45,7 @@ parse.add_argument('--strategy', type=str, default='constant', choices=['exponen
 #parse.add_argument('--softroute', type=bool, default=True, help='Use soft routing for the tree ensemble.')
 #parse.add_argument('--unknown_classes', type=bool, default=True, help='Use unknown classes for the tree ensemble.')
 #parse.add_argument('--pretrained', type=bool, default=True, help='Load pre-trained sub-models.')
-parse.add_argument('--train_submodels', type=bool, default=False, help='Train sub-models independently before ensemble training.')
+parse.add_argument('--train_submodels', type=bool, default=True, help='Train sub-models independently before ensemble training.')
 args = parse.parse_args()
 
 DATA_DIR = os.path.join(args.data_dir, args.data)
@@ -99,8 +99,8 @@ if args.train_submodels:
     )
     run_training(
         info=info, temp_args=args, logger=logger, train_dataloader=animal_train_dataloader, test_dataloader=animal_test_dataloader,
-        desc=desc, num_classes=num_classes, eval_metrics=["animal"], other_label=vehicle_classes if args.unknown_classes else None, 
-        weighted_loss=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2] if args.unknown_classes else None
+        desc=desc, num_classes=num_classes, eval_metrics=["animal"], other_label=vehicle_classes , 
+        weighted_loss=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2] 
     )
     # Clean up dataloaders
     del animal_train_dataloader, animal_test_dataloader
@@ -121,8 +121,8 @@ if args.train_submodels:
     )
     run_training(
         info=info, temp_args=args, logger=logger, train_dataloader=vehicle_train_dataloader, test_dataloader=vehicle_test_dataloader,
-        desc=desc, num_classes=num_classes, eval_metrics=["vehicle"], other_label=animal_classes if args.unknown_classes else None, 
-        weighted_loss=[1.0, 1.0, 1.0, 1.0, 0.2] if args.unknown_classes else None
+        desc=desc, num_classes=num_classes, eval_metrics=["vehicle"], other_label=animal_classes , 
+        weighted_loss=[1.0, 1.0, 1.0, 1.0, 0.2] 
     )
     # Clean up dataloaders
     del vehicle_train_dataloader, vehicle_test_dataloader
@@ -142,18 +142,18 @@ trainer = ParEnsemble(info, args, loss_weights_animal=[1.0, 1.0, 1.0, 1.0, 1.0, 
 
 # Load pre-trained sub-models if specified
 logger.log("Loading pre-trained sub-models...")
-trainer.load_pretrained_submodels()
+
 animal_model_path = os.path.join(args.log_dir, "7-class-animal_parx", "weights-best.pt")
 vehicle_model_path = os.path.join(args.log_dir, "5-class-vehicle_parx", "weights-best.pt")
 trainer.load_individual_models(
-    animal_model_path=animal_model_path, vehicle_model_path=vehicle_model_path
+    animal_path=animal_model_path, vehicle_path=vehicle_model_path
 )
 
 logger.log("Model Summary:")
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-logger.log(f"Total parameters: {count_parameters(trainer)}")
+logger.log(f"Total parameters: {count_parameters(trainer.model)}")
 last_lr = args.lr
 
 # save initial model weights
@@ -268,7 +268,7 @@ wandb.summary["final_test_adv_acc"] = old_score[1]
 try:
     logger.log('Starting AutoAttack evaluation...')
     aa_result = subprocess.run(
-        ['python', 'eval-aa.py', '--desc', args.desc, '--log-dir', args.log_dir, '--data-dir', args.data_dir, '--softroute', str(args.softroute).lower(), '--unknown_classes', str(args.unknown_classes).lower()],
+        ['python', 'eval-aa.py', '--desc', args.desc, '--log-dir', args.log_dir, '--data-dir', args.data_dir, '--softroute', True, '--unknown_classes', True],
         capture_output=True, text=True
     )
     logger.log(aa_result.stdout)

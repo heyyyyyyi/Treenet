@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from core.attacks import create_attack
 from core.metrics import accuracy, binary_accuracy, subclass_accuracy
-from .model import create_model, animal_classes_index, vehicle_classes_index
+from .model import create_model, animal_classes, vehicle_classes
 
 from core.utils.mart import mart_loss, mart_tree_loss
 from core.utils.rst import CosineLR
@@ -72,9 +72,8 @@ class ParEnsemble(object):
         loss_weights_vehicle = None,
 
     ):
-        
-        self.model = create_model(args.model, args.normalize, info, device, unknown_classes=args.unknown_classes)
-        self.softroute = args.softroute  # Whether to use soft routing in the model
+        # default using unknown_classes flags for create_model
+        self.model = create_model(args.model, args.normalize, info, device)
         
         self.alpha1 = alpha1
         self.alpha2 = alpha2
@@ -149,7 +148,7 @@ class ParEnsemble(object):
             update_steps = int(np.floor(num_samples / self.params.batch_size) + 1)
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
-                max_lr=[self.params.lr , self.params.lr , self.params.lr  ],
+                max_lr=[self.params.lr , self.params.lr  ],
                 pct_start=0.25,
                 steps_per_epoch=update_steps,
                 epochs=int(num_epochs),
@@ -163,7 +162,7 @@ class ParEnsemble(object):
         elif self.params.scheduler == 'cosinew':
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
-                max_lr=[self.params.lr , self.params.lr , self.params.lr ],
+                max_lr=[self.params.lr , self.params.lr],
                 pct_start=0.025,
                 total_steps=int(num_epochs),
             )
@@ -193,18 +192,26 @@ class ParEnsemble(object):
             subroot_animal_logits, subroot_vehicle_logits = self.model(x)
         else:
             subroot_animal_logits, subroot_vehicle_logits = x
-        
-        conf_animal = 1 - F.softmax(subroot_animal_logits)[:, -1]  # scalar confidence
-        conf_vehicle = 1 - F.softmax(subroot_vehicle_logits)[:, -1]
 
-        animal_logits = torch.full((subroot_animal_logits.shape[0], 10), fill_value=-5.0)
-        vehicle_logits = torch.full((subroot_vehicle_logits.shape[0], 10), fill_value=-5.0)
+        # Ensure indices are on the same device as the logits
+        device = subroot_animal_logits.device if logits else x.device
+        animal_classes_index = torch.tensor(animal_classes, device=device)
+        vehicle_classes_index = torch.tensor(vehicle_classes, device=device)
+        
+        conf_animal = 1 - F.softmax(subroot_animal_logits, dim=1)[:, -1]  # scalar confidence
+        conf_vehicle = 1 - F.softmax(subroot_vehicle_logits, dim=1)[:, -1]
+
+        animal_logits = torch.full((subroot_animal_logits.shape[0], 10), fill_value=-5.0, device=device)
+        vehicle_logits = torch.full((subroot_vehicle_logits.shape[0], 10), fill_value=-5.0, device=device)
 
         animal_logits[:, animal_classes_index] = subroot_animal_logits[:, :-1]
         vehicle_logits[:, vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
 
-        logits_final = conf_animal.unsqueeze(1) * animal_logits + \
-                    conf_vehicle.unsqueeze(1) * vehicle_logits
+        # Normalize confidence
+        total_conf = conf_animal + conf_vehicle + 1e-8
+        logits_final = (conf_animal.unsqueeze(1) * animal_logits + 
+                        conf_vehicle.unsqueeze(1) * vehicle_logits) / total_conf.unsqueeze(1)
+
         return logits_final 
 
     def train(self, dataloader, epoch=0, adversarial=False, verbose=True):
@@ -248,13 +255,21 @@ class ParEnsemble(object):
         """
         Loss function for the model with pt recording.
         """
-        subroot_animal, subroot_vehicle = logits_set
         # Focal loss with pt recording
         final_logits = self.forward(logits_set, logits=True)
         loss, _ = self.criterion(final_logits, y) # nn.CrossEntropyLoss(reduction='mean')
 
-        subroot_loss_animal, subroot_pt_animal = self.criterion(subroot_animal, y, gamma=self.gamma, reduction='mean', weights=self.loss_weights_animal)
-        subroot_loss_vehicle, subroot_pt_vehicle = self.criterion(subroot_vehicle, y, gamma=self.gamma, reduction='mean', weights=self.loss_weights_vehicle)
+
+        logits_animal, logits_vehicle = logits_set
+        y_animal = y.clone()
+        y_vehicle = y.clone()
+
+        # Map `y` to subroot_animal and subroot_vehicle targets
+        y_animal = map_labels_to_subroots(y_animal, animal_classes)
+        y_vehicle = map_labels_to_subroots(y_vehicle, vehicle_classes)
+
+        subroot_loss_animal, subroot_pt_animal = self.criterion(logits_animal, y_animal, gamma=self.gamma, weights=torch.tensor(self.loss_weights_animal).to(device))
+        subroot_loss_vehicle, subroot_pt_vehicle = self.criterion(logits_vehicle, y_vehicle, gamma=self.gamma, weights=torch.tensor(self.loss_weights_vehicle).to(device))
 
         return loss, subroot_loss_animal, subroot_loss_vehicle, subroot_pt_animal, subroot_pt_vehicle
 
@@ -262,7 +277,7 @@ class ParEnsemble(object):
         """
         Wrapper for loss function to return only the loss value.
         """
-        loss, _, _, _, _, _, _ = self.loss_fn(logits_set, y)
+        loss, _, _, _, _ = self.loss_fn(logits_set, y)
         return loss
 
 
@@ -283,14 +298,13 @@ class ParEnsemble(object):
             'clean_acc': accuracy(y, preds),
         }
 
-        # Record additional metrics only if not using softroute
-        if not self.softroute:
-            batch_metrics.update({
-                'subroot_loss_animal': subroot_loss_animal.item() if subroot_loss_animal is not None else 0.0,
-                'subroot_loss_vehicle': subroot_loss_vehicle.item() if subroot_loss_vehicle is not None else 0.0,
-                'subroot_pt_animal': subroot_pt_animal.mean().item() if subroot_pt_animal is not None and subroot_pt_animal.numel() > 0 else 0.0,
-                'subroot_pt_vehicle': subroot_pt_vehicle.mean().item() if subroot_pt_vehicle is not None and subroot_pt_vehicle.numel() > 0 else 0.0,
-            })
+        
+        batch_metrics.update({
+            'subroot_loss_animal': subroot_loss_animal.item() if subroot_loss_animal is not None else 0.0,
+            'subroot_loss_vehicle': subroot_loss_vehicle.item() if subroot_loss_vehicle is not None else 0.0,
+            'subroot_pt_animal': subroot_pt_animal.mean().item() if subroot_pt_animal is not None and subroot_pt_animal.numel() > 0 else 0.0,
+            'subroot_pt_vehicle': subroot_pt_vehicle.mean().item() if subroot_pt_vehicle is not None and subroot_pt_vehicle.numel() > 0 else 0.0,
+        })
 
         return loss, batch_metrics
 
