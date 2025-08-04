@@ -42,10 +42,12 @@ parse = parser_train()
 # 添加参数
 parse.add_argument('--decay_factor', type=float, default=0.98, help='Decay factor for alpha values.')
 parse.add_argument('--strategy', type=str, default='constant', choices=['exponential', 'linear', 'constant'], help='Strategy for alpha decay.')
-#parse.add_argument('--softroute', type=bool, default=True, help='Use soft routing for the tree ensemble.')
-#parse.add_argument('--unknown_classes', type=bool, default=True, help='Use unknown classes for the tree ensemble.')
-#parse.add_argument('--pretrained', type=bool, default=True, help='Load pre-trained sub-models.')
-parse.add_argument('--train_submodels', type=bool, default=True, help='Train sub-models independently before ensemble training.')
+# alpha1 alpha2 alpha3
+parse.add_argument('--alpha1', type=float, default=1.0, help='Initial value for alpha1.')
+parse.add_argument('--alpha2', type=float, default=1.0, help='Initial value for alpha2.')
+parse.add_argument('--alpha3', type=float, default=1.0, help='Initial value for alpha3.')
+
+parse.add_argument('--train_submodels', type=bool, default=False, help='Train sub-models independently before ensemble training.')
 args = parse.parse_args()
 
 DATA_DIR = os.path.join(args.data_dir, args.data)
@@ -161,7 +163,7 @@ if not os.path.exists(WEIGHTS):
     logger.log('Saving initial model weights to {}'.format(WEIGHTS))
     trainer.save_model(WEIGHTS)
 
-#breakpoint()
+breakpoint()
 
 # Adversarial Training
 if NUM_ADV_EPOCHS > 0:

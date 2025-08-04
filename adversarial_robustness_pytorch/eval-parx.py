@@ -111,7 +111,11 @@ class ModelWrapper(nn.Module):
         animal_logits[:, animal_classes_index] = subroot_animal_logits[:, :-1]
         vehicle_logits[:, vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
 
-        # Normalize confidence
+        # baseline 取conf大的logit
+        # logits_final = torch.where(conf_animal.unsqueeze(1) > conf_vehicle.unsqueeze(1), 
+        #                            animal_logits, vehicle_logits)
+
+        # # Normalize confidence
         total_conf = conf_animal + conf_vehicle + 1e-8
         logits_final = (conf_animal.unsqueeze(1) * animal_logits + 
                         conf_vehicle.unsqueeze(1) * vehicle_logits) / total_conf.unsqueeze(1)
