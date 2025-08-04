@@ -66,7 +66,6 @@ class ParEnsemble(object):
         alpha2: float = 1,
         alpha3: float = 1,
         max_epochs: int = 100,  # Total number of training epochs
-        alpha_update_strategy: dict = None,
         gamma: float = 2.0,  # Focal loss gamma parameter
         loss_weights_animal = None,
         loss_weights_vehicle = None,
@@ -81,10 +80,6 @@ class ParEnsemble(object):
         self.gamma = gamma  # Focal loss gamma parameter
 
         self.max_epochs = args.num_adv_epochs
-        self.alpha_update_strategy = alpha_update_strategy or {
-            "balance_ratio": 1 / 1,  # alpha2:alpha3 ratio, e.g., 6:4 for animal vs vehicle
-            # "balance_ratio": 1 / 1,
-        }
 
         self.params = args
         #self.criterion = nn.CrossEntropyLoss(reduction='mean')
@@ -178,7 +173,7 @@ class ParEnsemble(object):
 
         elif strategy == 'linear':
             progress = current_epoch / self.max_epochs
-            self.alpha1 = self.alpha1*(1-progress)
+            
             self.alpha2 = self.alpha2*(1-progress)
             self.alpha3 = self.alpha3*(1-progress)
             
@@ -207,11 +202,8 @@ class ParEnsemble(object):
         animal_logits[:, animal_classes_index] = subroot_animal_logits[:, :-1]
         vehicle_logits[:, vehicle_classes_index] = subroot_vehicle_logits[:, :-1]
 
-        # Normalize confidence
-        total_conf = conf_animal + conf_vehicle + 1e-8
-        logits_final = (conf_animal.unsqueeze(1) * animal_logits + 
-                        conf_vehicle.unsqueeze(1) * vehicle_logits) / total_conf.unsqueeze(1)
-
+        logits_final = conf_animal.unsqueeze(1) * animal_logits + \
+                    conf_vehicle.unsqueeze(1) * vehicle_logits
         return logits_final 
 
     def train(self, dataloader, epoch=0, adversarial=False, verbose=True):
@@ -257,7 +249,7 @@ class ParEnsemble(object):
         """
         # Focal loss with pt recording
         final_logits = self.forward(logits_set, logits=True)
-        loss, _ = self.criterion(final_logits, y) # nn.CrossEntropyLoss(reduction='mean')
+        loss_fuss, _ = self.criterion(final_logits, y) # nn.CrossEntropyLoss(reduction='mean')
 
 
         logits_animal, logits_vehicle = logits_set
@@ -270,6 +262,10 @@ class ParEnsemble(object):
 
         subroot_loss_animal, subroot_pt_animal = self.criterion(logits_animal, y_animal, gamma=self.gamma, weights=torch.tensor(self.loss_weights_animal).to(device))
         subroot_loss_vehicle, subroot_pt_vehicle = self.criterion(logits_vehicle, y_vehicle, gamma=self.gamma, weights=torch.tensor(self.loss_weights_vehicle).to(device))
+
+        loss = self.alpha1 * loss_fuss + \
+               self.alpha2 * subroot_loss_animal + \
+               self.alpha3 * subroot_loss_vehicle
 
         return loss, subroot_loss_animal, subroot_loss_vehicle, subroot_pt_animal, subroot_pt_vehicle
 
