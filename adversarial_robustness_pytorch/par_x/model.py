@@ -4,54 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
-animal_classes = [ 2, 3, 4, 5, 6, 7]  # 6种动物
-vehicle_classes = [0, 1, 8, 9]  # 4种交通工具
-
-# samilar to TreeResNet, change the root model to LightRootResnet, and subroot model to LightSubRootResNet
-# 10 dim 
-class LightTreeResNet(nn.Module):
-    def __init__(self, block, subroot_num_blocks, num_classes=10, device='cpu'):
-        super(LightTreeResNet, self).__init__()
-        self.subroot_animal = LightResnet(block, subroot_num_blocks, num_classes=6,device=device)
-        self.subroot_vehicle = LightResnet(block, subroot_num_blocks, num_classes=4,device=device)
-        self.num_classes = num_classes
-
-    def forward(self, x):
-
-        subroot_logits_animal = self.subroot_animal(x)
-        subroot_logits_vehicle = self.subroot_vehicle(x)
-
-        logits_animal = torch.zeros_like(self.num_classes)
-        logits_vehicle = torch.zeros_like(self.num_classes)
-
-        animal_classes_index = torch.tensor(animal_classes)
-        vehicle_classes_index = torch.tensor(vehicle_classes)
-
-        logits_animal[:, animal_classes_index] = subroot_logits_animal[:,:]
-        logits_vehicle[:, vehicle_classes_index] = subroot_logits_vehicle[:,:]
-
-        return logits_animal, logits_vehicle
-
-    def load_subroot_animal(self, path):
-        """
-        Load pre-trained weights for the subroot animal model with error handling.
-        """
-        try:
-            checkpoint = torch.load(path)
-            self.subroot_animal.load_state_dict(checkpoint['model_state_dict'])
-        except Exception as e:
-            print(f"Failed to load subroot animal model from {path}: {e}")
-
-    def load_subroot_vehicle(self, path):
-        """
-        Load pre-trained weights for the subroot vehicle model with error handling.
-        """
-        try:
-            checkpoint = torch.load(path)
-            self.subroot_vehicle.load_state_dict(checkpoint['model_state_dict'])
-        except Exception as e:
-            print(f"Failed to load subroot vehicle model from {path}: {e}")
-
 # 4+1 dim / 6+1 dim 
 class LightTreeResNet_Unknown(nn.Module):
     def __init__(self, block, subroot_num_blocks, num_classes=10,  device='cpu'):
@@ -125,15 +77,7 @@ def lighttreeresnet(name, num_classes=10, device='cpu', unkown_classes=False):
                 device=device
             )
         else:
-            return LightTreeResNet(
-                BasicBlock, 
-                subroot_num_blocks=[2, 2, 2], 
-                num_classes=num_classes, 
-                device=device
-            )
-    
-    
-    raise ValueError('Only lighttreeresnet20 is supported!')
+            raise ValueError('Only lighttreeresnet20 with unknown_classes is supported!')
     return
 
 def create_model(name, normalize, info, device, unknown_classes=True, num_classes=10):

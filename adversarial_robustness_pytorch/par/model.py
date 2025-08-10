@@ -4,9 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
-animal_classes = [ 2, 3, 4, 5, 6, 7]  # 6种动物
-vehicle_classes = [0, 1, 8, 9]  # 4种交通工具
-
 # samilar to TreeResNet, change the root model to LightRootResnet, and subroot model to LightSubRootResNet
 class LightTreeResNet(nn.Module):
     def __init__(self, block, root_num_blocks, subroot_num_blocks, num_classes=10, device='cpu'):
