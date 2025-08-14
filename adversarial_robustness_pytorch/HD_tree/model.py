@@ -1,5 +1,5 @@
-from core.model.resnet import BasicBlock, Bottleneck
-from core.model.resnet import Normalization
+from core.models.resnet import BasicBlock, Bottleneck
+from core.models.resnet import Normalization
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
@@ -29,13 +29,7 @@ class LightShareResnet(nn.Module):  # Renamed from LightRootResnet to LightShare
         out = self.layer1(out)
         #print(out.shape) # (m, 16, 32, 32)
         feature_map = self.layer2(out)
-        #print(feature_map.shape) # (m, 32, 16, 16)
-        out = F.avg_pool2d(feature_map, 4)
-        #print(out.shape) # (m, 32, 4, 4)
-        out = out.view(out.size(0), -1)
-        #print(out.shape) # (m, 512)
-       
-        #print(logits.shape)
+        
         return feature_map
 
 class LightSubRootResNet(nn.Module):
@@ -104,32 +98,6 @@ def lighttreeresnet(name, num_classes=2, pretrained=False, device='cpu'):
     raise ValueError('Only lighttreeresnet20 is supported!')
     return
 
-def create_model(name, normalize, info, device):
-    """
-    Returns suitable model from its name.
-    Arguments:
-        name (str): name of resnet architecture.
-        num_classes (int): number of target classes.
-        pretrained (bool): whether to load pretrained weights (not implemented).
-        device (str): device to use ('cpu' or 'cuda').
-    Returns:
-        torch.nn.Module.
-    """
-    
-    backbone = lighttreeresnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
-    if normalize:
-        normalization_layer = Normalization(info['mean'], info['std']).to(device)
-        backbone.share = torch.nn.Sequential(normalization_layer, backbone.share)  # Updated from root to share
-        backbone.subroot_coarse = torch.nn.Sequential(normalization_layer, backbone.subroot_coarse)
-        backbone.subroot_animal = torch.nn.Sequential(normalization_layer, backbone.subroot_animal)
-        backbone.subroot_vehicle = torch.nn.Sequential(normalization_layer, backbone.subroot_vehicle)
-    else:
-        backbone.share = torch.nn.Sequential(backbone.share)  # Updated from root to share
-        backbone.subroot_coarse = torch.nn.Sequential(backbone.subroot_coarse)
-        backbone.subroot_animal = torch.nn.Sequential(backbone.subroot_animal)
-        backbone.subroot_vehicle = torch.nn.Sequential(backbone.subroot_vehicle)
-    return backbone.to(device)
-
 
 class LightResnet(nn.Module):
     def __init__(self, block, num_blocks, num_channels=3, num_classes=10, device='cpu'):
@@ -144,8 +112,18 @@ class LightResnet(nn.Module):
         self.avg_pool = nn.AvgPool2d(8)
         self.fc = nn.Linear(64, num_classes)
         
-        self.share = [self.layer1, self.layer2[0]]
-        self.subroot = [self.layer2[1], self.layer3, self.avg_pool, self.fc]
+        self.share = nn.Sequential(
+            self.conv1,
+            self.bn1,
+            self.layer1,
+            self.layer2[0]
+        )
+        self.subroot = nn.Sequential(
+            self.layer2[1],
+            self.layer3,
+            self.avg_pool,
+            self.fc
+        )
 
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -180,3 +158,67 @@ def lightresnet(name, num_classes=10, pretrained=False, device='cpu'):
         return LightResnet(BasicBlock, [2, 2, 2], num_classes=num_classes, device=device)
      
     raise ValueError('Only lightresnet20 are supported!')
+
+
+def create_model(name, normalize, info, device):
+    """
+    Returns suitable model from its name.
+    Arguments:
+        name (str): name of resnet architecture.
+        num_classes (int): number of target classes.
+        pretrained (bool): whether to load pretrained weights (not implemented).
+        device (str): device to use ('cpu' or 'cuda').
+    Returns:
+        torch.nn.Module.
+    """
+    if "tree" in name:
+        backbone = lighttreeresnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
+        if normalize:
+            normalization_layer = Normalization(info['mean'], info['std']).to(device)
+            backbone.share = torch.nn.Sequential(normalization_layer, backbone.share)  # Keep normalization separate
+        return backbone.to(device)
+    else:
+        backbone = lightresnet(name, num_classes=info['num_classes'], pretrained=False, device=device)
+        if normalize:
+            normalization_layer = Normalization(info['mean'], info['std']).to(device)
+            backbone.share = torch.nn.Sequential(normalization_layer, backbone.share)  # Keep normalization separate
+        return backbone.to(device)
+
+
+class CoarseWrapper(nn.Module):
+    """Wrapper for share + subroot_coarse."""
+    def __init__(self, share, subroot_coarse):
+        super(CoarseWrapper, self).__init__()
+        self.share = share
+        self.subroot_coarse = subroot_coarse
+
+    def forward(self, x):
+        features = self.share(x)
+        logits = self.subroot_coarse(features)
+        return logits
+
+
+class AnimalWrapper(nn.Module):
+    """Wrapper for share + subroot_animal."""
+    def __init__(self, share, subroot_animal):
+        super(AnimalWrapper, self).__init__()
+        self.share = share
+        self.subroot_animal = subroot_animal
+
+    def forward(self, x):
+        features = self.share(x)
+        logits = self.subroot_animal(features)
+        return logits
+
+
+class VehicleWrapper(nn.Module):
+    """Wrapper for share + subroot_vehicle."""
+    def __init__(self, share, subroot_vehicle):
+        super(VehicleWrapper, self).__init__()
+        self.share = share
+        self.subroot_vehicle = subroot_vehicle
+
+    def forward(self, x):
+        features = self.share(x)
+        logits = self.subroot_vehicle(features)
+        return logits

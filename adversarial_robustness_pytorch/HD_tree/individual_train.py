@@ -38,15 +38,11 @@ SCHEDULERS = ['cyclic', 'step', 'cosine', 'cosinew']
  
 # pretrain share + coarse 
 class Trainer(object):
-    def __init__(self, info, args, other_label, weighted_loss):
+    def __init__(self, info, args, model, other_label, weighted_loss):
         super(Trainer, self).__init__()
         seed(args.seed)
-        self.model = create_model(
-            name=args.model,
-            normalize=args.normalize,
-            info=info,
-            device=device
-        )
+        self.model = model
+        self.params = args
         self.model = self.model.to(device)
         self.info = info
         if weighted_loss:
@@ -150,7 +146,17 @@ class Trainer(object):
         """
         metrics = pd.DataFrame()
         self.model.share.eval()  # Ensure the share model is in eval mode
-        self.model.subroot.train()  # Train the coarse subroot model
+
+        # Determine the correct subroot attribute
+        if hasattr(self.model, 'subroot_animal'):
+            subroot = self.model.subroot_animal
+        elif hasattr(self.model, 'subroot_vehicle'):
+            subroot = self.model.subroot_vehicle
+        else:
+            raise AttributeError("The model does not have a valid subroot attribute to pretrain.")
+
+        subroot.train()  # Train the specific subroot model
+
         for data in tqdm(dataloader, desc=f'Epoch {epoch}: ', disable=not verbose):
             x, y = data
             x, y = x.to(device), y.to(device)
@@ -165,7 +171,7 @@ class Trainer(object):
                 loss, batch_metrics = self.standard_loss(x, y)
             loss.backward()
             if self.params.clip_grad:
-                nn.utils.clip_grad_norm_(self.model.subroot.parameters(), self.params.clip_grad)
+                nn.utils.clip_grad_norm_(subroot.parameters(), self.params.clip_grad)
             self.optimizer.step()
             if self.params.scheduler in ['cyclic']:
                 self.scheduler.step()
@@ -295,7 +301,14 @@ class Trainer(object):
         """
         Save the subroot model to a file.
         """
-        torch.save(self.model.subroot.state_dict(), path)
+        if hasattr(self.model, 'subroot_coarse'):  # For CoarseWrapper
+            torch.save(self.model.subroot_coarse.state_dict(), path)
+        elif hasattr(self.model, 'subroot_animal'):  # For AnimalWrapper
+            torch.save(self.model.subroot_animal.state_dict(), path)
+        elif hasattr(self.model, 'subroot_vehicle'):  # For VehicleWrapper
+            torch.save(self.model.subroot_vehicle.state_dict(), path)
+        else:
+            raise AttributeError("The model does not have a valid subroot attribute to save.")
 
     def load_model(self, share_path, subroot_path):
         """
@@ -303,10 +316,30 @@ class Trainer(object):
         """
         if share_path is not None:
             self.model.share.load_state_dict(torch.load(share_path, map_location=device))
+        
         if subroot_path is not None:
-            self.model.subroot.load_state_dict(torch.load(subroot_path, map_location=device))
+            if hasattr(self.model, 'subroot_coarse'):  # For CoarseWrapper
+                self.model.subroot_coarse.load_state_dict(torch.load(subroot_path, map_location=device))
+            elif hasattr(self.model, 'subroot_animal'):  # For AnimalWrapper
+                self.model.subroot_animal.load_state_dict(torch.load(subroot_path, map_location=device))
+            elif hasattr(self.model, 'subroot_vehicle'):  # For VehicleWrapper
+                self.model.subroot_vehicle.load_state_dict(torch.load(subroot_path, map_location=device))
+            else:
+                raise AttributeError("The model does not have a valid subroot attribute to load.")
+        
         self.model.share.eval()
-        self.model.subroot.eval()
+        if hasattr(self.model, 'subroot_coarse'):
+            self.model.subroot_coarse.eval()
+        elif hasattr(self.model, 'subroot_animal'):
+            self.model.subroot_animal.eval()
+        elif hasattr(self.model, 'subroot_vehicle'):
+            self.model.subroot_vehicle.eval()
+    
+    def load_share(self, path):
+        """
+        Load the share model from a file.
+        """
+        self.model.share.load_state_dict(torch.load(path, map_location=device))
     
 def setup_data(data_dir, batch_size, batch_size_validation, args, filter_classes=None, pseudo_label_classes=None):
     """
@@ -321,12 +354,13 @@ def setup_data(data_dir, batch_size, batch_size_validation, args, filter_classes
     del train_dataset, test_dataset
     return train_dataloader, test_dataloader
 
-def pretrain_coarse(train_dataloader, test_dataloader, args, logger, device, info):
+def pretrain_coarse(model, train_dataloader, test_dataloader, temp_args, logger, device, info):
     """Pretrain the shared feature extractor and coarse subroot classifier."""
-    trainer = Trainer(info, args, other_label=None, weighted_loss=None)
-    logger.info("Pretraining share + coarse...")
+    args = argparse.Namespace(**vars(temp_args))
+    args.num_classes = 10
 
-    # Initialize wandb for logging
+    trainer = Trainer(info, args, model, other_label=None, weighted_loss=None)
+    logger.log("Pretraining share + coarse...")
     wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity,
@@ -334,37 +368,73 @@ def pretrain_coarse(train_dataloader, test_dataloader, args, logger, device, inf
         reinit=True,
     )
 
-    for epoch in range(args.num_adv_epochs):
+    DATA_DIR = os.path.join(args.data_dir, args.data)
+    LOG_DIR = os.path.join(args.log_dir, f"{args.desc}")
+    WEIGHTS_SHARE = os.path.join(LOG_DIR, 'weights-share.pt')
+    WEIGHTS_COARSE = os.path.join(LOG_DIR, 'weights-coarse.pt')
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    metrics = pd.DataFrame()
+    old_score = [0.0, 0.0]
+
+    for epoch in range(1, args.num_adv_epochs + 1):
+        start = time.time()
+        logger.log('======= Epoch {} ======='.format(epoch))
+
+        if args.scheduler:
+            last_lr = trainer.scheduler.get_last_lr()[0]
+
         train_metrics = trainer.pretrain_share_coarse(train_dataloader, epoch=epoch, adversarial=True)
         test_metrics = trainer.eval(test_dataloader)
 
-        # Log metrics to wandb
-        wandb.log({
-            "epoch": epoch,
-            "train_loss": train_metrics['loss'],
-            "train_clean_acc": train_metrics['clean_acc'],
-            "test_clean_acc": test_metrics['acc'],
+        epoch_metrics = {'train_'+k: v for k, v in train_metrics.items()}
+        epoch_metrics.update({'epoch': epoch, 'lr': last_lr})
+        epoch_metrics.update({
+            'test_clean_acc': test_metrics['acc'],
+            'test_clean_acc_animal': test_metrics['acc_animal'],
+            'test_clean_acc_vehicle': test_metrics['acc_vehicle'],
+            'test_clean_acc_bi': test_metrics['acc_bi'],
+            'test_adversarial_acc': None,
+            'test_adversarial_acc_animal': None,
+            'test_adversarial_acc_vehicle': None,
+            'test_adversarial_acc_bi': None,
         })
 
-        logger.info(f"Epoch {epoch}: Train Loss: {train_metrics['loss']:.4f}, "
-                    f"Train Clean Acc: {train_metrics['clean_acc']:.4f}, "
-                    f"Test Clean Acc: {test_metrics['acc']:.4f}")
+        if epoch % args.adv_eval_freq == 0 or epoch > (args.num_adv_epochs - 5):
+            test_adv_metrics = trainer.eval(test_dataloader, adversarial=True)
+            epoch_metrics.update({
+                'test_adversarial_acc': test_adv_metrics['acc'],
+                'test_adversarial_acc_animal': test_adv_metrics['acc_animal'],
+                'test_adversarial_acc_vehicle': test_adv_metrics['acc_vehicle'],
+                'test_adversarial_acc_bi': test_adv_metrics['acc_bi'],
+            })
 
-    trainer.save_share(os.path.join(args.log_dir, 'share_layer', 'weights-share.pt'))
-    trainer.save_subroot_coarse(os.path.join(args.log_dir, 'coarse_layer', 'weights-coarse.pt'))
+        if test_metrics['acc'] >= old_score[0]:
+            old_score[0] = test_metrics['acc']
+            trainer.save_share(WEIGHTS_SHARE)
+            trainer.save_subroot(WEIGHTS_COARSE)
 
+        logger.log('Time taken: {}'.format(format_time(time.time() - start)))
+        metrics = pd.concat([metrics, pd.DataFrame(epoch_metrics, index=[0])], ignore_index=True)
+        metrics.to_csv(os.path.join(LOG_DIR, 'stats_coarse.csv'), index=False)
+        wandb.log(epoch_metrics)
+
+    logger.log('\nPretraining completed.')
+    logger.log('Standard Accuracy-\tTest: {:.2f}%.'.format(old_score[0] * 100))
     wandb.finish()
 
-
-def pretrain_submodels(animal_train_dataloader, animal_test_dataloader, vehicle_train_dataloader, vehicle_test_dataloader, args, logger, device, info):
+def pretrain_submodels(animal_model, vehicle_model, animal_train_dataloader, animal_test_dataloader, vehicle_train_dataloader, vehicle_test_dataloader, temp_args, logger, device, info):
     """Pretrain the animal and vehicle subroot classifiers."""
-    trainer = Trainer(info, args, other_label=None, weighted_loss=None)
-
+    args = argparse.Namespace(**vars(temp_args))
     # Pretrain animal subroot
-    logger.info("Pretraining animal subroot...")
-    trainer.load_model(os.path.join(args.log_dir, 'share_layer', 'weights-share.pt'), None)
+    args.num_classes = 6
+    trainer = Trainer(info, args, animal_model, other_label=None, weighted_loss=None)
+    logger.log("Pretraining animal subroot...")
 
-    # Initialize wandb for animal subroot
+    LOG_DIR = os.path.join(args.log_dir, f"{args.desc}")
+    trainer.load_model(os.path.join(LOG_DIR, 'weights-share.pt'), None)  # Fix: Load shared weights from LOG_DIR
+    WEIGHTS_ANIMAL = os.path.join(LOG_DIR, 'weights-animal.pt')  # Ensure save path matches
+
     wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity,
@@ -372,30 +442,51 @@ def pretrain_submodels(animal_train_dataloader, animal_test_dataloader, vehicle_
         reinit=True,
     )
 
-    for epoch in range(args.num_adv_epochs):
+    metrics = pd.DataFrame()
+    old_score = 0.0
+
+    for epoch in range(1, args.num_adv_epochs + 1):
+        start = time.time()
+        logger.log('======= Epoch {} ======='.format(epoch))
+
+        if args.scheduler:
+            last_lr = trainer.scheduler.get_last_lr()[0]
+
         train_metrics = trainer.pretrain_subroot(animal_train_dataloader, epoch=epoch, adversarial=True)
         test_metrics = trainer.eval(animal_test_dataloader)
 
-        # Log metrics to wandb
-        wandb.log({
-            "epoch": epoch,
-            "train_loss": train_metrics['loss'],
-            "train_clean_acc": train_metrics['clean_acc'],
-            "test_clean_acc_animal": test_metrics['acc_animal'],
+        epoch_metrics = {'train_'+k: v for k, v in train_metrics.items()}
+        epoch_metrics.update({'epoch': epoch, 'lr': last_lr})
+        epoch_metrics.update({
+            'test_clean_acc_animal': test_metrics['acc'],
+            'test_adversarial_acc_animal': None,
         })
 
-        logger.info(f"Epoch {epoch}: Train Loss: {train_metrics['loss']:.4f}, "
-                    f"Train Clean Acc: {train_metrics['clean_acc']:.4f}, "
-                    f"Test Clean Acc (Animal): {test_metrics['acc_animal']:.4f}")
+        if epoch % args.adv_eval_freq == 0 or epoch > (args.num_adv_epochs - 5):
+            test_adv_metrics = trainer.eval(animal_test_dataloader, adversarial=True)
+            epoch_metrics['test_adversarial_acc_animal'] = test_adv_metrics['acc']
 
-    trainer.save_subroot(os.path.join(args.log_dir, 'animal_layer', 'weights-animal.pt'))
+        if test_metrics['acc'] >= old_score:
+            old_score = test_metrics['acc']
+            trainer.save_subroot(WEIGHTS_ANIMAL)
+
+        logger.log('Time taken: {}'.format(format_time(time.time() - start)))
+        metrics = pd.concat([metrics, pd.DataFrame(epoch_metrics, index=[0])], ignore_index=True)
+        metrics.to_csv(os.path.join(LOG_DIR, 'stats_animal.csv'), index=False)
+        wandb.log(epoch_metrics)
+
+    logger.log('\nPretraining animal subroot completed.')
+    logger.log('Standard Accuracy-\tTest (Animal): {:.2f}%.'.format(old_score * 100))
     wandb.finish()
 
     # Pretrain vehicle subroot
-    logger.info("Pretraining vehicle subroot...")
-    trainer.load_model(os.path.join(args.log_dir, 'share_layer', 'weights-share.pt'), None)
+    args.num_classes = 4
+    trainer = Trainer(info, args, vehicle_model, other_label=None, weighted_loss=None)
+    logger.log("Pretraining vehicle subroot...")
+    trainer.load_model(os.path.join(LOG_DIR, 'weights-share.pt'), None)  # Fix: Load shared weights from LOG_DIR
 
-    # Initialize wandb for vehicle subroot
+    WEIGHTS_VEHICLE = os.path.join(LOG_DIR, 'weights-vehicle.pt')  # Ensure save path matches
+
     wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity,
@@ -403,21 +494,39 @@ def pretrain_submodels(animal_train_dataloader, animal_test_dataloader, vehicle_
         reinit=True,
     )
 
-    for epoch in range(args.num_adv_epochs):
+    metrics = pd.DataFrame()
+    old_score = 0.0
+
+    for epoch in range(1, args.num_adv_epochs + 1):
+        start = time.time()
+        logger.log('======= Epoch {} ======='.format(epoch))
+
+        if args.scheduler:
+            last_lr = trainer.scheduler.get_last_lr()[0]
+
         train_metrics = trainer.pretrain_subroot(vehicle_train_dataloader, epoch=epoch, adversarial=True)
         test_metrics = trainer.eval(vehicle_test_dataloader)
 
-        # Log metrics to wandb
-        wandb.log({
-            "epoch": epoch,
-            "train_loss_vehicle": train_metrics['loss'],
-            "train_clean_acc": train_metrics['clean_acc'],
-            "test_clean_acc_vehicle": test_metrics['acc_vehicle'],
+        epoch_metrics = {'train_'+k: v for k, v in train_metrics.items()}
+        epoch_metrics.update({'epoch': epoch, 'lr': last_lr})
+        epoch_metrics.update({
+            'test_clean_acc_vehicle': test_metrics['acc'],
+            'test_adversarial_acc_vehicle': None,
         })
 
-        logger.info(f"Epoch {epoch}: Train Loss: {train_metrics['loss']:.4f}, "
-                    f"Train Clean Acc: {train_metrics['clean_acc']:.4f}, "
-                    f"Test Clean Acc (Vehicle): {test_metrics['acc_vehicle']:.4f}")
+        if epoch % args.adv_eval_freq == 0 or epoch > (args.num_adv_epochs - 5):
+            test_adv_metrics = trainer.eval(vehicle_test_dataloader, adversarial=True)
+            epoch_metrics['test_adversarial_acc_vehicle'] = test_adv_metrics['acc']
 
-    trainer.save_subroot(os.path.join(args.log_dir, 'vehicle_layer', 'weights-vehicle.pt'))
+        if test_metrics['acc'] >= old_score:
+            old_score = test_metrics['acc']
+            trainer.save_subroot(WEIGHTS_VEHICLE)
+
+        logger.log('Time taken: {}'.format(format_time(time.time() - start)))
+        metrics = pd.concat([metrics, pd.DataFrame(epoch_metrics, index=[0])], ignore_index=True)
+        metrics.to_csv(os.path.join(LOG_DIR, 'stats_vehicle.csv'), index=False)
+        wandb.log(epoch_metrics)
+
+    logger.log('\nPretraining vehicle subroot completed.')
+    logger.log('Standard Accuracy-\tTest (Vehicle): {:.2f}%.'.format(old_score * 100))
     wandb.finish()

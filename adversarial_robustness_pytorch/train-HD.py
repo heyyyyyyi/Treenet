@@ -30,21 +30,25 @@ import subprocess  # 用于调用评估脚本
 
 from core import animal_classes, vehicle_classes
 
+from HD_tree.model import CoarseWrapper, AnimalWrapper, VehicleWrapper  # Import wrapper models
+
 _WANDB_USERNAME = "yhe106-johns-hopkins-university"
-_WANDB_PROJECT = "ablation_test"
+_WANDB_PROJECT = "HD_test"
 
 # Setup
 
 parse = parser_train()
 
 # Add missing arguments
-# parse.add_argument('--decay_factor', type=float, default=0.98, help='Decay factor for alpha values.')
-# parse.add_argument('--strategy', type=str, default='constant', choices=['exponential', 'linear', 'constant'], help='Strategy for alpha decay.')
+parse.add_argument('--decay_factor', type=float, default=0.98, help='Decay factor for alpha values.')
+parse.add_argument('--strategy', type=str, default='constant', choices=['exponential', 'linear', 'constant'], help='Strategy for alpha decay.')
 # parse.add_argument('--softroute', type=bool, default=True, help='Use soft routing for the tree ensemble.')
 # parse.add_argument('--unknown_classes', type=bool, default=True, help='Use unknown classes for the tree ensemble.')
-# parse.add_argument('--pretrained', type=bool, default=True, help='Load pre-trained sub-models.')
-parse.add_argument('--train_submodels', type=bool, default=False, help='Train sub-models independently before ensemble training.')
-parse.add_argument('--train_coarse', type=bool, default=False, help='Train shared and coarse models before ensemble training.')
+parse.add_argument('--pretrained', type=bool, default=True, help='Load pre-trained sub-models.')
+parse.add_argument('--train_submodels', type=bool, default=True, help='Train sub-models independently before ensemble training.')
+parse.add_argument('--train_coarse', type=bool, default=True, help='Train shared and coarse models before ensemble training.')
+parse.add_argument('--wandb_project', type=str, default=_WANDB_PROJECT, help='WandB project name.')
+parse.add_argument('--wandb_entity', type=str, default=_WANDB_USERNAME, help='WandB entity name.')
 
 args = parse.parse_args()
 
@@ -79,20 +83,31 @@ train_dataset, test_dataset, train_dataloader, test_dataloader = load_data(
 del train_dataset, test_dataset
 print (f"Train Dataloader Size: {len(train_dataloader.dataset)}")
 print (f"Test Dataloader Size: {len(test_dataloader.dataset)}")
+# Initialize HDEnsemble
+trainer = HDEnsemble(info, args)
+full_model = trainer.model
+
+logger.log("Model Summary:")
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+logger.log("Total Trainable Parameters (Full Model): {}".format(count_parameters(trainer.model)))
 
 # Pretrain shared and coarse models if required
 if args.train_coarse:
-    logger.info("Pretraining share + coarse...")
-    pretrain_coarse(train_dataloader, test_dataloader, args, logger, device, info)
+    logger.log("Pretraining share + coarse...")
+    model = CoarseWrapper(full_model.share, full_model.subroot_coarse)  # Use CoarseWrapper
+    logger.log("Trainable Parameters (Coarse Model): {}".format(count_parameters(model)))
+    pretrain_coarse(model, train_dataloader, test_dataloader, args, logger, device, info)
 
 # Pretrain sub-models if required
 if args.train_submodels:
-    logger.info("Pretraining subroot models...")
+    logger.log("Pretraining subroot models...")
     animal_train_dataloader, animal_test_dataloader = setup_data(
-        DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=vehicle_classes, pseudo_label_classes=animal_classes
+        DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=animal_classes, pseudo_label_classes=None
     )
     vehicle_train_dataloader, vehicle_test_dataloader = setup_data(
-        DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=animal_classes, pseudo_label_classes=vehicle_classes
+        DATA_DIR, BATCH_SIZE, BATCH_SIZE_VALIDATION, args, filter_classes=vehicle_classes, pseudo_label_classes=None
     )
     # 输出数据大小 检查
     print(f"Animal Train Dataloader Size: {len(animal_train_dataloader.dataset)}")
@@ -100,8 +115,12 @@ if args.train_submodels:
     print(f"Vehicle Train Dataloader Size: {len(vehicle_train_dataloader.dataset)}")
     print(f"Vehicle Test Dataloader Size: {len(vehicle_test_dataloader.dataset)}")
 
+    animal_model = AnimalWrapper(full_model.share, full_model.subroot_animal)  # Use AnimalWrapper
+    vehicle_model = VehicleWrapper(full_model.share, full_model.subroot_vehicle)  # Use VehicleWrapper
+    logger.log("Trainable Parameters (Animal Model): {}".format(count_parameters(animal_model)))
+    logger.log("Trainable Parameters (Vehicle Model): {}".format(count_parameters(vehicle_model)))
     pretrain_submodels(
-        animal_train_dataloader, animal_test_dataloader, vehicle_train_dataloader, vehicle_test_dataloader,
+        animal_model, vehicle_model, animal_train_dataloader, animal_test_dataloader, vehicle_train_dataloader, vehicle_test_dataloader,
         args, logger, device, info
     )
 
@@ -112,43 +131,42 @@ wandb.init(
     reinit=True,
 )
 
-# Initialize HDEnsemble
-trainer = HDEnsemble(info, args)
+
 
 # Load pre-trained components if specified
 if args.pretrained:
-    logger.info("Loading pre-trained components...")
-    trainer.load_share(os.path.join(args.log_dir, 'share_layer', 'weights-share.pt'))
-    trainer.load_subroot_coarse(os.path.join(args.log_dir, 'coarse_layer', 'weights-coarse.pt'))
-    trainer.load_subroot_animal(os.path.join(args.log_dir, 'animal_layer', 'weights-animal.pt'))
-    trainer.load_subroot_vehicle(os.path.join(args.log_dir, 'vehicle_layer', 'weights-vehicle.pt'))
+    logger.log("Loading pre-trained components...")
+    trainer.load_share(os.path.join(args.log_dir, args.desc, 'weights-share.pt'))
+    trainer.load_subroot_coarse(os.path.join(args.log_dir, args.desc, 'weights-coarse.pt'))
+    trainer.load_subroot_animal(os.path.join(args.log_dir, args.desc, 'weights-animal.pt'))
+    trainer.load_subroot_vehicle(os.path.join(args.log_dir, args.desc, 'weights-vehicle.pt'))
 
-logger.info("Model Summary:")
+logger.log("Model Summary:")
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-logger.info("Total Trainable Parameters: {}".format(count_parameters(trainer.model)))
+logger.log("Total Trainable Parameters: {}".format(count_parameters(trainer.model)))
 
 # Save initial model weights
 if not os.path.exists(WEIGHTS):
-    logger.info('Saving initial model weights to {}'.format(WEIGHTS))
+    logger.log('Saving initial model weights to {}'.format(WEIGHTS))
     trainer.save_model(WEIGHTS)
 
 # Adversarial Training
 if NUM_ADV_EPOCHS > 0:
-    logger.info('\n\n')
+    logger.log('\n\n')
     metrics = pd.DataFrame()
-    logger.info('Standard Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader)['acc']*100))
-    logger.info('Adversarial Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader, adversarial=True)['acc']*100))
+    logger.log('Standard Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader)['acc']*100))
+    logger.log('Adversarial Accuracy-\tTest: {:2f}%.'.format(trainer.eval(test_dataloader, adversarial=True)['acc']*100))
     
     old_score = [0.0, 0.0]
-    logger.info('Adversarial training for {} epochs'.format(NUM_ADV_EPOCHS))
+    logger.log('Adversarial training for {} epochs'.format(NUM_ADV_EPOCHS))
     trainer.init_optimizer(args.num_adv_epochs)
     test_adv_acc = 0.0    
 
 for epoch in range(1, NUM_ADV_EPOCHS+1):
     start = time.time()
-    logger.info('======= Epoch {} ======='.format(epoch))
+    logger.log('======= Epoch {} ======='.format(epoch))
     
     # Extract learning rates
     root_lr = trainer.optimizer.param_groups[0]['lr']
@@ -166,11 +184,11 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
 
     alpha1, alpha2, alpha3 = trainer.update_alphas(epoch, args.decay_factor)
 
-    logger.info('Loss: {:.4f}.\tRoot LR: {:.6f}.\tSubroot Animal LR: {:.6f}.\tSubroot Vehicle LR: {:.6f}'.format(
+    logger.log('Loss: {:.4f}.\tRoot LR: {:.6f}.\tSubroot Animal LR: {:.6f}.\tSubroot Vehicle LR: {:.6f}'.format(
         res['loss'], root_lr, subroot_animal_lr, subroot_vehicle_lr
     ))
     
-    logger.info('Standard Accuracy-\tTest: {:.2f}%.'.format(test_acc*100))
+    logger.log('Standard Accuracy-\tTest: {:.2f}%.'.format(test_acc*100))
     
     epoch_metrics = {'train_'+k: v for k, v in res.items()}
     epoch_metrics.update({
@@ -192,12 +210,12 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         test_adv_acc_animal = test_adv_res['acc_animal']
         test_adv_acc_vehicle = test_adv_res['acc_vehicle']
 
-        logger.info('Adversarial Accuracy-\tTest: {:.2f}%.'.format(test_adv_acc*100))
+        logger.log('Adversarial Accuracy-\tTest: {:.2f}%.'.format(test_adv_acc*100))
         epoch_metrics.update({'test_adversarial_acc': test_adv_acc})
         epoch_metrics.update({'test_adversarial_acc_animal': test_adv_acc_animal})
         epoch_metrics.update({'test_adversarial_acc_vehicle': test_adv_acc_vehicle})
 
-    logger.info('Alpha1: {:.4f}.\tAlpha2: {:.4f}.\tAlpha3: {:.4f}'.format(alpha1, alpha2, alpha3))
+    logger.log('Alpha1: {:.4f}.\tAlpha2: {:.4f}.\tAlpha3: {:.4f}'.format(alpha1, alpha2, alpha3))
     epoch_metrics.update({'alpha1': alpha1, 'alpha2': alpha2, 'alpha3': alpha3})
 
     if test_adv_acc >= old_score[1]:
@@ -205,7 +223,7 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
         trainer.save_model(WEIGHTS)
     trainer.save_model(os.path.join(LOG_DIR, 'weights-last.pt'))
 
-    logger.info('Time taken: {}'.format(format_time(time.time()-start)))
+    logger.log('Time taken: {}'.format(format_time(time.time()-start)))
     
     metrics = pd.concat([metrics, pd.DataFrame(epoch_metrics, index=[0])], ignore_index=True)
     metrics.to_csv(os.path.join(LOG_DIR, 'stats_adv.csv'), index=False)
@@ -213,12 +231,12 @@ for epoch in range(1, NUM_ADV_EPOCHS+1):
 
 # Record metrics
 train_acc = res['clean_acc'] if 'clean_acc' in res else trainer.eval(train_dataloader)['acc']
-logger.info('\nTraining completed.')
-logger.info('Standard Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(train_acc*100, old_score[0]*100))
+logger.log('\nTraining completed.')
+logger.log('Standard Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(train_acc*100, old_score[0]*100))
 if NUM_ADV_EPOCHS > 0:
-    logger.info('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, old_score[1]*100)) 
+    logger.log('Adversarial Accuracy-\tTrain: {:.2f}%.\tTest: {:.2f}%.'.format(res['adversarial_acc']*100, old_score[1]*100)) 
 
-logger.info('Script Completed.')
+logger.log('Script Completed.')
 
 wandb.summary["final_train_acc"] = train_acc
 wandb.summary["final_test_clean_acc"] = old_score[0]
@@ -226,12 +244,12 @@ wandb.summary["final_test_adv_acc"] = old_score[1]
 
 # Ensure AutoAttack evaluation subprocess runs successfully
 try:
-    logger.info('Starting AutoAttack evaluation...')
+    logger.log('Starting AutoAttack evaluation...')
     aa_result = subprocess.run(
         ['python', 'eval-aa.py', '--desc', args.desc, '--log-dir', args.log_dir, '--data-dir', args.data_dir, '--softroute', str(args.softroute).lower(), '--unknown_classes', str(args.unknown_classes).lower()],
         capture_output=True, text=True
     )
-    logger.info(aa_result.stdout)
+    logger.log(aa_result.stdout)
 
     # Parse and log AutoAttack results to wandb
     for line in aa_result.stdout.splitlines():
@@ -242,7 +260,11 @@ try:
             robust_acc = float(line.split(":")[1].strip().replace("%", "")) / 100
             wandb.summary["autoattack_robust_acc"] = robust_acc
 except Exception as e:
-    logger.info(f"AutoAttack evaluation failed: {e}")
+    logger.log(f"AutoAttack evaluation failed: {e}")
 
 wandb.finish()
 
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)

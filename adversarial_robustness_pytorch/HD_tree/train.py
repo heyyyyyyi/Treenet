@@ -17,8 +17,6 @@ from core.utils.mart import mart_loss, mart_tree_loss
 from core.utils.rst import CosineLR
 from core.utils.trades import trades_loss, trades_tree_loss
 
-from core.models.treeresnet import lighttreeresnet
-
 from core.utils.context import ctx_noparamgrad_and_eval
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -249,15 +247,16 @@ class HDEnsemble(object):
         """
         # Focal loss with pt recording
         final_logits = self.forward(logits_set, logits=True)
-        loss_fuss, _ = self.criterion(final_logits, y) # nn.CrossEntropyLoss(reduction='mean')
+        loss_fuss, pt = self.criterion(final_logits, y)  # nn.CrossEntropyLoss(reduction='mean')
 
-        return loss_fuss
+        # Return additional components as None if not applicable
+        return loss_fuss, None, None, None, None
 
     def wrap_loss_fn(self, logits_set, y):
         """
         Wrapper for loss function to return only the loss value.
         """
-        loss = self.loss_fn(logits_set, y)
+        loss,_,_,_,_ = self.loss_fn(logits_set, y)
         return loss
 
 
