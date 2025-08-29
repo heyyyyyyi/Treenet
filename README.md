@@ -1,7 +1,17 @@
-# tree_model
+# TreeNet: Hierarchical and Parallel CNN Architectures for Adversarial Robustness
 
-> Experiments on **hierarchical (HD-CNN)** and **parallel** CNN architectures for **privacy & robustness** under adversarial training.  
-> Datasets: CIFAR-10 (clean) + CIFAR-10-C (corruptions) + adversarial evaluation (AutoAttack / robustness benchmarks).
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-1.9+-red.svg)](https://pytorch.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+> **TreeNet** is a research framework for exploring **hierarchical (HD-CNN)** and **parallel** CNN architectures designed to enhance **adversarial robustness** and **privacy** in deep learning models. The project implements and compares various tree-structured neural network architectures against traditional flat CNNs.
+
+**Key Features:**
+- 🌳 **Hierarchical CNN (HD-CNN)** with soft/hard routing mechanisms
+- 🔀 **Parallel CNN architectures** with mixture-of-experts fusion
+- 🛡️ **Adversarial training** support (TRADES, MART)
+- 📊 **Comprehensive evaluation** on CIFAR-10, CIFAR-10-C, and adversarial benchmarks
+- 🎯 **Category-aware architectures** for animal/vehicle classification
 
 ---
 
@@ -9,6 +19,32 @@
 - **Compare**: flat baseline CNN vs. hierarchical/parallel variants
 - **Train** with TRADES / MART and evaluate robustness
 - **Measure** clean accuracy, adversarial accuracy, and per-category behavior
+
+---
+
+## 📁 Repository Structure
+
+```
+TreeNet/
+├── HD-CNN-Final/              # Hierarchical CNN implementation
+│   ├── main.py               # Main training script for HD-CNN
+│   ├── models.py             # HD-CNN model architectures
+│   ├── dataset.py            # Data loading and preprocessing
+│   ├── losses.py             # Custom loss functions
+│   └── readme.md             # HD-CNN specific documentation
+├── PRIME-augmentations/       # PRIME augmentation framework
+│   ├── train.py              # Training with PRIME augmentations
+│   ├── config/               # Configuration files
+│   └── requirements.txt      # PRIME-specific dependencies
+├── adversarial_robustness_pytorch/  # Adversarial training framework
+│   ├── train-tree.py         # Tree model adversarial training
+│   ├── train-par.py          # Parallel model training
+│   ├── eval-aa.py            # AutoAttack evaluation
+│   ├── eval-rb.py            # Robustness benchmark evaluation
+│   └── requirements.txt      # Adversarial training dependencies
+├── baseline_train.py         # Baseline flat CNN training
+└── README.md                 # This file
+```
 
 ---
 
@@ -48,22 +84,92 @@
 
 ## 🔧 Environment & Setup
 
+### Prerequisites
+- Python 3.10+
+- CUDA-compatible GPU (recommended)
+- 8GB+ RAM
+
+### Installation
+
+1. **Clone the repository**
 ```bash
-# (Recommended) Create env
-conda create -n tree-model python=3.10 -y
-conda activate tree-model
+git clone https://github.com/heyyyyyyi/Treenet.git
+cd Treenet
+```
 
-# Install deps
+2. **Create and activate conda environment**
+```bash
+conda create -n treenet python=3.10 -y
+conda activate treenet
+```
+
+3. **Install dependencies** (choose based on your use case)
+
+For **HD-CNN experiments**:
+```bash
+# Basic PyTorch and dependencies
+pip install torch torchvision torchaudio
+pip install numpy matplotlib scikit-learn
+```
+
+For **PRIME augmentations**:
+```bash
+cd PRIME-augmentations
 pip install -r requirements.txt
+# or use conda environment
+conda env create -f environment.yml
+cd ..
+```
 
-# Prepare data
-# data/ should contain CIFAR-10; optional CIFAR-10-C for PRIME augmentations
+For **adversarial training**:
+```bash
+cd adversarial_robustness_pytorch
+pip install -r requirements.txt
+# or use conda environment  
+conda env create -f environment.yml
+cd ..
+```
+
+4. **Prepare datasets**
+```bash
+# Create data directory
+mkdir -p data
+
+# CIFAR-10 will be automatically downloaded on first run
+# For CIFAR-10-C (corruptions), download from:
+# https://zenodo.org/record/2535967
+# Extract to: ./data/cifar10c/CIFAR-10-C/
 ```
  
 ## 🚀 Training & Evaluation
-### PRIME Augmentation (optional)
-From: https://github.com/amodas/PRIME-augmentations.git
-```python
+
+### 1. HD-CNN Training
+
+Train hierarchical CNN models with spectral clustering:
+
+```bash
+cd HD-CNN-Final
+
+# Configure dataset path in dataset.py (set root_path)
+# Configure parameters in config.py or main.py:
+# - Dataset: CIFAR-10/CIFAR-100
+# - Number of cluster centers: 2/9  
+# - Number of fine classes: 10/100
+
+python main.py
+```
+
+**Important**: Before running, update the following in the code:
+- `root_path` in `dataset.py` to point to your data directory
+- Dataset selection and cluster parameters in configuration files
+
+### 2. PRIME Augmentation Training
+
+Enhanced training with corruption-aware augmentations:
+
+```bash
+cd PRIME-augmentations
+
 python -u train.py \
   --config=config/cifar10_cfg.py \
   --config.model.name=lighttreeresnet20 \
@@ -71,10 +177,13 @@ python -u train.py \
   --config.cc_dir=./data/cifar10c/CIFAR-10-C \
   --config.save_dir=./PRIME/linear_lr/
 ```
-### Adversarial Training (TRADES / MART)
-From: https://github.com/imrahulr/adversarial_robustness_pytorch.git
-- Train tree model with TRADES
-```python
+
+### 3. Adversarial Training
+
+#### Tree Model with TRADES
+```bash
+cd adversarial_robustness_pytorch
+
 python train-tree.py \
   --data-dir ./data \
   --log-dir ./log_test \
@@ -86,26 +195,51 @@ python train-tree.py \
   --adv-eval-freq 10 \
   --beta 6
 ```
-- Train tree model with MART
-```python 
+
+#### Tree Model with MART
+```bash
 python train-tree.py \
   --data-dir ./data \
   --log-dir ./log_test \
-  --desc test \
+  --desc mart_tree \
   --data cifar10 \
   --batch-size 1024 \
   --model lighttreeresnet20 \
-  --num-adv-epochs 1 \
+  --num-adv-epochs 100 \
   --adv-eval-freq 10 \
   --beta 6 \
   --mart
 ```
-- Train origin (flat) model
-```python 
+
+#### Parallel Models
+```bash
+# Train parallel architecture (parx)
+python train-parx.py \
+  --data-dir ./data \
+  --log-dir ./log_parx \
+  --desc parx_experiment \
+  --data cifar10 \
+  --batch-size 1024 \
+  --model lightresnet20 \
+  --num-adv-epochs 100
+
+# Train parallel architecture (par)  
+python train-par.py \
+  --data-dir ./data \
+  --log-dir ./log_par \
+  --desc par_experiment \
+  --data cifar10 \
+  --batch-size 1024 \
+  --model lightresnet20 \
+  --num-adv-epochs 100
+```
+
+#### Baseline Flat CNN
+```bash
 python train.py \
   --data-dir ./data \
-  --log-dir ./log_test \
-  --desc trades_origin \
+  --log-dir ./log_baseline \
+  --desc trades_baseline \
   --data cifar10 \
   --batch-size 1024 \
   --model lightresnet20 \
@@ -113,17 +247,22 @@ python train.py \
   --adv-eval-freq 10 \
   --beta 6
 ```
-### Evaluation
-- AutoAttack
-```python
+
+### 4. Evaluation
+
+#### AutoAttack Evaluation
+```bash
+cd adversarial_robustness_pytorch
+
 python eval-aa.py \
   --data-dir ./data \
   --log-dir ./log_test \
   --desc test \
   --data cifar10
 ```
-- Robustness Benchmark (e.g., Linf)
-```python 
+
+#### Robustness Benchmark
+```bash
 python eval-rb.py \
   --data-dir ./data \
   --log-dir ./baseline_log/origin \
@@ -131,18 +270,23 @@ python eval-rb.py \
   --data cifar10 \
   --threat Linf
 ```
-- Category Grouping / Analysis
-```python 
+
+#### Category-wise Analysis
+```bash
 python category_group.py \
   --data-dir ./data \
   --log-dir ./baseline_log/origin \
   --desc origin_10_classifier \
   --data cifar10
 ```
-## 📊 Results (Aug 15 snapshot)
+## 📊 Experimental Results
 
-> Metrics are **Top-1 accuracy** on CIFAR-10 (clean) and under adversarial evaluation.  
-> Values are averaged over representative runs; exact results depend on seeds and hyperparameters.
+> **Evaluation Metrics**: Top-1 accuracy on CIFAR-10 (clean accuracy) and adversarial accuracy under various attacks.  
+> **Note**: Results are averaged over multiple runs. Exact values may vary depending on random seeds and hyperparameters.
+
+### Performance Summary
+
+Our experiments demonstrate that **hierarchical and parallel architectures** can achieve competitive or superior performance compared to traditional flat CNNs, particularly in terms of clean accuracy while maintaining reasonable adversarial robustness.
 
 ---
 
@@ -186,13 +330,86 @@ python category_group.py \
 ---
 
 ## 🔍 Key Observations
+
 - **Parallel / hierarchical models** often achieve **higher clean accuracy** than baseline (up to 78.56%).  
 - **Robust accuracy** gains depend strongly on fusion strategy and loss balancing:
   - Independent → joint training improves clean accuracy.
   - Weighted loss (α schedules) shifts the clean vs. robust tradeoff.
-- **HD-Tree** shows promise but requires careful route calibration (soft vs. hard).  
+- **HD-Tree** shows promise but requires careful route calibration (soft vs. hard).
+- **Category-aware architectures** (animal/vehicle grouping) provide interpretable performance gains.
 
 ---
 
+## 🛠️ Troubleshooting
 
+### Common Issues
 
+1. **CUDA compatibility**: Ensure your PyTorch installation matches your CUDA version
+2. **Memory issues**: Reduce batch size if encountering OOM errors
+3. **Data path errors**: Update `root_path` in `HD-CNN-Final/dataset.py` before training
+4. **Missing dependencies**: Install requirements for the specific component you're using
+
+### HD-CNN Specific Notes
+
+From `HD-CNN-Final/readme.md`:
+- Configure dataset selection (CIFAR-10/CIFAR-100) in the code
+- Adjust cluster centers (2 for CIFAR-10, 9 for CIFAR-100)
+- Increase pre-train and test batch steps for final experiments
+- Fine-tune parameters `u_t` and `lam` if needed
+
+---
+
+## 📚 References
+
+This project builds upon and integrates several research frameworks:
+
+- **PRIME Augmentations**: [amodas/PRIME-augmentations](https://github.com/amodas/PRIME-augmentations)
+- **Adversarial Robustness**: [imrahulr/adversarial_robustness_pytorch](https://github.com/imrahulr/adversarial_robustness_pytorch)
+- **HD-CNN**: Hierarchical Deep CNN architecture for image classification
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Please feel free to:
+
+1. **Report bugs** by opening an issue
+2. **Suggest enhancements** or new features
+3. **Submit pull requests** with improvements
+4. **Share your experimental results** and insights
+
+### Development Setup
+
+```bash
+# Fork the repository and clone your fork
+git clone https://github.com/YOUR_USERNAME/Treenet.git
+cd Treenet
+
+# Create a development branch
+git checkout -b feature/your-feature-name
+
+# Make your changes and test them
+# Submit a pull request
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 📧 Contact
+
+- **Author**: He Yi
+- **GitHub**: [@heyyyyyyi](https://github.com/heyyyyyyi)
+- **Repository**: [heyyyyyyi/Treenet](https://github.com/heyyyyyyi/Treenet)
+
+For questions, suggestions, or collaboration opportunities, please open an issue or reach out through GitHub.
+
+---
+
+## 🌟 Acknowledgments
+
+Special thanks to the authors and maintainers of the foundational frameworks this project builds upon, and to the research community for advancing the field of adversarial robustness and hierarchical neural architectures.
